@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import '../models/order_item.dart';
 import '../services/socket_service.dart';
@@ -24,6 +26,24 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     super.initState();
     // 2. 앱 시작 시 픽업 테이블 서버에 접속 시도
     _socketService.connectToServer();
+
+    _socketService.onPickupSignalReceived = (orderNo) {
+      setState(() {
+        // 리스트에서 해당 주문 번호를 가진 아이템을 찾아 삭제
+        _orders.removeWhere((order) {
+          if (order.orderNo == orderNo) {
+            print("✅ 서버 신호에 의해 $orderNo번 주문이 자동 픽업 처리됨");
+            return true;
+          }
+          return false;
+        });
+      });
+
+      // 알림 표시 (옵션)
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("테이블에서 $orderNo번 픽업이 확인되었습니다."), duration: const Duration(seconds: 1)),
+      );
+    };
   }
 
   // 3. [제조 완료] 버튼 클릭 시 실행될 함수
@@ -60,7 +80,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text("KDS SYSTEM", style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text("KDS", style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.blueGrey[900],
         centerTitle: true,
       ),
@@ -73,7 +93,8 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
             mainAxisSpacing: 12,
             crossAxisSpacing: 12,
           ),
-          itemCount: 9, // 화면에는 상위 9개만 노출
+          //itemCount: 9, // 화면에는 상위 9개만 노출
+          itemCount: min(_orders.length, 9),
           itemBuilder: (context, index) {
             final order = _orders[index];
             return _buildOrderCard(order);

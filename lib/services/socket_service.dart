@@ -6,7 +6,7 @@ class KdsSocketService {
   WebSocket? _socket;
   final String serverIp = "192.168.10.192";
   final int serverPort = 8080;
-
+  Function(String orderNo)? onPickupSignalReceived;
   final StreamController<bool> _connectionController = StreamController<bool>.broadcast();
   Stream<bool> get connectionStream => _connectionController.stream;
 
@@ -16,13 +16,27 @@ class KdsSocketService {
       // ws://192.168.10.192:8080 형식으로 접속해야 합니다.
       final String wsUrl = "ws://$serverIp:$serverPort";
       _socket = await WebSocket.connect(wsUrl).timeout(const Duration(seconds: 5));
-
+      _socket!.add(jsonEncode({
+        "type": "identify",
+        "role": "KDS"
+      }));
       print("✅ 픽업 테이블 서버(WebSocket) 연결 성공!");
       _connectionController.add(true);
 
       _socket!.listen(
             (data) {
           print("📩 서버 응답: $data");
+          try {
+            final Map<String, dynamic> jsonData = jsonDecode(data.toString());
+            // 서버에서 PICKUP_COMPLETE 신호가 왔을 때
+            if (jsonData['type'] == 'PICKUP_COMPLETE') {
+              final String orderNo = jsonData['orderNo'].toString();
+              // 콜백 함수 실행
+              onPickupSignalReceived?.call(orderNo);
+            }
+          } catch (e) {
+            print("신호 해석 에러: $e");
+          }
         },
         onDone: () => _handleDisconnect(),
         onError: (e) => _handleDisconnect(),
