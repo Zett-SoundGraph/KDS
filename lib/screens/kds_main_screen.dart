@@ -1,6 +1,8 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle; // CSV 로드용
+import 'package:csv/csv.dart'; // CSV 파싱용
 import '../models/order_item.dart';
 import '../services/socket_service.dart';
 
@@ -14,60 +16,126 @@ class KdsMainScreen extends StatefulWidget {
 class _KdsMainScreenState extends State<KdsMainScreen> {
   // 1. 소켓 서비스 인스턴스 생성
   final KdsSocketService _socketService = KdsSocketService();
+  final PageController _pageController = PageController();
 
-  // 테스트용 임시 데이터
-  final List<OrderItem> _orders = List.generate(
-    15,
-        (index) => OrderItem(orderNo: "${100 + index + 1}", menuName: "주문 메뉴 ${index + 1}"),
-  );
+  List<OrderItem> _orders = [];
+  bool _isLoading = true;
+  int _currentPage = 0;
 
   @override
   void initState() {
     super.initState();
-    // 2. 앱 시작 시 픽업 테이블 서버에 접속 시도
     _socketService.connectToServer();
+    _loadCsvData();
 
-    _socketService.onPickupSignalReceived = (orderNo) {
+    // 수정된 부분: orderNo뿐만 아니라 menuName도 함께 받습니다.
+    _socketService.onPickupSignalReceived = (orderNo, menuName) {
+      if (!mounted) return;
+
       setState(() {
-        // 리스트에서 해당 주문 번호를 가진 아이템을 찾아 삭제
-        _orders.removeWhere((order) {
-          if (order.orderNo == orderNo) {
-            print("✅ 서버 신호에 의해 $orderNo번 주문이 자동 픽업 처리됨");
-            return true;
+        // 1. 해당 주문 번호(예: 101)를 가진 카드의 인덱스를 찾습니다.
+        int orderIndex = _orders.indexWhere((order) => order.orderNo == orderNo);
+
+        if (orderIndex != -1) {
+          // 2. 해당 카드 내부의 메뉴 리스트(items)에 접근합니다.
+          List<SubItem> items = _orders[orderIndex].items;
+
+          // 3. 리스트에서 방금 집어간 'menuName'과 일치하는 아이템 하나만 삭제합니다.
+          // trim()을 사용하여 혹시 모를 문자열 공백 에러를 방지합니다.
+          int itemIndex = items.indexWhere((item) => item.menuName.trim() == menuName.trim());
+
+          if (itemIndex != -1) {
+            items.removeAt(itemIndex);
+            debugPrint("✅ $orderNo번의 $menuName 삭제됨. (남은 메뉴: ${items.length}개)");
           }
-          return false;
-        });
+
+          // 4. [중요] 만약 카드의 모든 메뉴가 다 나갔다면(리스트가 비었다면), 그때 카드를 지웁니다.
+          if (items.isEmpty) {
+            _orders.removeAt(orderIndex);
+            debugPrint("🎊 $orderNo번 주문의 모든 픽업이 완료되어 카드를 제거합니다.");
+          }
+        }
       });
 
-      // 알림 표시 (옵션)
+      // 알림 표시 (선택 사항)
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("테이블에서 $orderNo번 픽업이 확인되었습니다."), duration: const Duration(seconds: 1)),
+        SnackBar(
+          content: Text("$orderNo번 주문의 $menuName 픽업 확인!"),
+          duration: const Duration(seconds: 1),
+        ),
       );
     };
   }
 
-  // 3. [제조 완료] 버튼 클릭 시 실행될 함수
-  void _onCompleteCooking(OrderItem order) {
-    setState(() {
-      order.status = OrderStatus.ready; // 화면 상태를 '준비됨'으로 변경
-    });
+  Future<void> _loadCsvData() async {
+    try {
+      final String rawData =
+          await rootBundle.loadString("assets/data/orders.csv");
+      final normalizedData =
+          rawData.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
 
-    // 🚀 소켓을 통해 서버로 "READY:주문번호" 신호 전송
-    _socketService.sendOrderReady(order.orderNo, order.menuName);
+      // 구분자는 쉼표(,), 줄바꿈은 \n으로 명시해줍니다.
+      List<List<dynamic>> csvTable = const CsvToListConverter(
+        fieldDelimiter: ',',
+        eol: '\n',
+        shouldParseNumbers: false, // 숫자 파싱 에러 방지를 위해 false 추천
+      ).convert(normalizedData);
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("${order.orderNo}번 제조 완료 신호를 보냈습니다.")),
-    );
+      debugPrint("📊 [결과] 파싱된 행 개수: ${csvTable.length}");
+
+      Map<String, OrderItem> groupMap = {};
+      int currentSequence = 101;
+
+      for (var i = 1; i < csvTable.length; i++) {
+        final row = csvTable[i];
+        if (row.length < 7) continue;
+
+        String rawId = row[0].toString(); // 원본 긴 ID
+        String menuName = row[6].toString();
+
+        if (!groupMap.containsKey(rawId)) {
+          groupMap[rawId] = OrderItem(
+            orderNo: (currentSequence++).toString(),
+            rawOrderId: rawId,
+            items: [],
+          );
+        }
+        // 해당 그룹에 서브 아이템 추가
+        groupMap[rawId]!.items.add(SubItem(menuName: menuName));
+      }
+
+      setState(() {
+        _orders = groupMap.values.toList();
+      });
+    } catch (e) {
+      debugPrint("❌ CSV 에러: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
-  // 4. [픽업 완료] 버튼 클릭 시 실행될 함수
-  void _onCompletePickup(OrderItem order) {
-    setState(() {
-      _orders.remove(order);
-      order.status = OrderStatus.pending;
-      _orders.add(order); // 리스트 맨 뒤로 보냄
-    });
-  }
+  // // 3. [제조 완료] 버튼 클릭 시 실행될 함수
+  // void _onCompleteCooking(OrderItem order) {
+  //   setState(() {
+  //     order.status = OrderStatus.ready; // 화면 상태를 '준비됨'으로 변경
+  //   });
+  //
+  //   // 🚀 소켓을 통해 서버로 "READY:주문번호" 신호 전송
+  //   _socketService.sendOrderReady(order.orderNo, order.menuName);
+  //
+  //   ScaffoldMessenger.of(context).showSnackBar(
+  //     SnackBar(content: Text("${order.orderNo}번 제조 완료 신호를 보냈습니다.")),
+  //   );
+  // }
+  //
+  // // 4. [픽업 완료] 버튼 클릭 시 실행될 함수
+  // void _onCompletePickup(OrderItem order) {
+  //   setState(() {
+  //     _orders.remove(order);
+  //     order.status = OrderStatus.pending;
+  //     _orders.add(order); // 리스트 맨 뒤로 보냄
+  //   });
+  // }
 
   @override
   void dispose() {
@@ -77,6 +145,39 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading)
+      return const Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(child: CircularProgressIndicator()));
+    // 페이지당 9개씩 계산
+    Size screenSize = MediaQuery.of(context).size;
+    Orientation orientation = MediaQuery.of(context).orientation;
+
+    // 2. 가로 개수(Columns) 결정 (기존 로직 유지)
+    int crossAxisCount;
+    if (screenSize.width < 600) crossAxisCount = 1;
+    else if (screenSize.width < 1000) crossAxisCount = 2;
+    else if (screenSize.width < 1400) crossAxisCount = 3;
+    else crossAxisCount = 4;
+
+    // 3. 세로 줄 수(Rows) 결정 ★ 핵심 추가 포인트
+    int rowCount;
+    if (orientation == Orientation.portrait) {
+      rowCount = 3; // 세로 모드에선 무조건 3줄
+    } else {
+      // 가로 모드일 때 세로 높이가 너무 낮으면 1줄, 적당하면 2줄
+      if (screenSize.height < 500) {
+        rowCount = 1;
+      } else if (screenSize.height < 800) {
+        rowCount = 2;
+      } else {
+        rowCount = 3;
+      }
+    }
+
+    // 4. 페이지당 아이템 개수 재계산
+    int itemsPerPage = crossAxisCount * rowCount;
+    int pageCount = _orders.isEmpty ? 1 : (_orders.length / itemsPerPage).ceil();
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -84,69 +185,151 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         backgroundColor: Colors.blueGrey[900],
         centerTitle: true,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: GridView.builder(
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3, // 3x3 그리드
-            childAspectRatio: 1.2,
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-          ),
-          //itemCount: 9, // 화면에는 상위 9개만 노출
-          itemCount: min(_orders.length, 9),
-          itemBuilder: (context, index) {
-            final order = _orders[index];
-            return _buildOrderCard(order);
-          },
-        ),
-      ),
+      body: _orders.isEmpty
+          ? const Center(
+              child:
+                  Text("주문 데이터가 없습니다.", style: TextStyle(color: Colors.white)))
+          : Column(
+              children: [
+                // 2. PageView가 상단 공간을 모두 차지하도록 Expanded로 감싸기
+                Expanded(
+                  child: PageView.builder(
+                    controller: _pageController,
+                    itemCount: pageCount,
+                    onPageChanged: (int page) {
+                      setState(() {
+                        _currentPage = page;
+                      });
+                    },
+                    itemBuilder: (context, pageIndex) {
+                      // 3. 현재 페이지의 데이터 슬라이싱
+                      int start = pageIndex * itemsPerPage;
+                      int end = (start + itemsPerPage < _orders.length) ? start + itemsPerPage : _orders.length;
+                      final pageOrders = _orders.sublist(start, end);
+
+                      return LayoutBuilder(
+                        builder: (context, constraints) {
+                          // 5. 현재 결정된 rowCount에 맞춰 높이 계산
+                          // 간격 공식: (줄 수 + 1) * 간격12
+                          double totalSpacing = (rowCount + 1) * 12.0;
+                          final double dynamicHeight = (constraints.maxHeight - totalSpacing) / rowCount;
+
+                          return Padding(
+                            padding: const EdgeInsets.all(12.0),
+                            child: GridView.builder(
+                              physics: const NeverScrollableScrollPhysics(),
+                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: crossAxisCount,
+                                mainAxisExtent: dynamicHeight,
+                                mainAxisSpacing: 12,
+                                crossAxisSpacing: 12,
+                              ),
+                              itemCount: pageOrders.length,
+                              itemBuilder: (context, index) => _buildOrderCard(pageOrders[index]),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                // 3. 페이지 번호 표시 영역 (하단 고정)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20.0),
+                  child: Text(
+                    "${_currentPage + 1} / $pageCount",
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 
   Widget _buildOrderCard(OrderItem order) {
-    bool isReady = order.status == OrderStatus.ready;
+    // 모든 메뉴가 완료되었을 때만 배경색을 변경함
+    bool isFullReady = order.isAllReady;
 
     return Container(
       decoration: BoxDecoration(
-        color: isReady ? Colors.indigo[900] : Colors.grey[900],
+        color: isFullReady ? Colors.indigo[900] : Colors.grey[900],
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isReady ? Colors.blueAccent : Colors.white10, width: 2),
+        border: Border.all(color: isFullReady ? Colors.blueAccent : Colors.white10, width: 2),
       ),
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("NO. ${order.orderNo}", style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
-          const Divider(color: Colors.white24, height: 20),
-          Expanded(child: Text(order.menuName, style: const TextStyle(fontSize: 18, color: Colors.white70))),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: isReady ? null : () => _onCompleteCooking(order),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green[800]),
-                  child: const Text(
-                    "제조완료",
-                    style: TextStyle(
-                      fontSize: 11,
-                    ),
+          Text("NO. ${order.orderNo}", style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
+          const Divider(color: Colors.white24, height: 15),
+
+          // 1. 메뉴 리스트 영역 (스크롤 가능)
+          Expanded(
+            child: ListView.builder(
+              itemCount: order.items.length,
+              itemBuilder: (context, index) {
+                final subItem = order.items[index];
+                bool isSubReady = subItem.status == OrderStatus.ready;
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4.0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          subItem.menuName,
+                          style: TextStyle(
+                            color: isSubReady ? Colors.white38 : Colors.white,
+                            fontSize: 16,
+                            decoration: isSubReady ? TextDecoration.lineThrough : null, // 완료 시 취소선
+                          ),
+                        ),
+                      ),
+                      // 개별 제조완료 버튼
+                      SizedBox(
+                        width: 70,
+                        height: 35,
+                        child: ElevatedButton(
+                          onPressed: isSubReady ? null : () {
+                            setState(() {
+                              subItem.status = OrderStatus.ready;
+                            });
+                            // 필요 시 소켓으로 부분 완료 신호 전송
+                            _socketService.sendOrderReady(order.orderNo, subItem.menuName);
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green[700],
+                            padding: EdgeInsets.zero,
+                          ),
+                          child: Text(isSubReady ? "제조완료" : "제조중", style: const TextStyle(fontSize: 12)),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: !isReady ? null : () => _onCompletePickup(order),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red[900]),
-                  child: const Text("픽업완료",
-                    style: TextStyle(
-                      fontSize: 11,
-                    ),),
-                ),
-              ),
-            ],
-          )
+                );
+              },
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // 2. 카드 하단 픽업 완료 버튼 (전체 완료 시에만 활성화)
+          ElevatedButton(
+            onPressed: !isFullReady ? null : () {
+              setState(() {
+                _orders.remove(order); // 리스트에서 제거
+              });
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red[900],
+              minimumSize: const Size(double.infinity, 50),
+            ),
+            child: const Text("픽업 완료", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
         ],
       ),
     );
