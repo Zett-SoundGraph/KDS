@@ -33,28 +33,8 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
       if (!mounted) return;
 
       setState(() {
-        // 1. 해당 주문 번호(예: 101)를 가진 카드의 인덱스를 찾습니다.
-        int orderIndex = _orders.indexWhere((order) => order.orderNo == orderNo);
-
-        if (orderIndex != -1) {
-          // 2. 해당 카드 내부의 메뉴 리스트(items)에 접근합니다.
-          List<SubItem> items = _orders[orderIndex].items;
-
-          // 3. 리스트에서 방금 집어간 'menuName'과 일치하는 아이템 하나만 삭제합니다.
-          // trim()을 사용하여 혹시 모를 문자열 공백 에러를 방지합니다.
-          int itemIndex = items.indexWhere((item) => item.menuName.trim() == menuName.trim());
-
-          if (itemIndex != -1) {
-            items.removeAt(itemIndex);
-            debugPrint("✅ $orderNo번의 $menuName 삭제됨. (남은 메뉴: ${items.length}개)");
-          }
-
-          // 4. [중요] 만약 카드의 모든 메뉴가 다 나갔다면(리스트가 비었다면), 그때 카드를 지웁니다.
-          if (items.isEmpty) {
-            _orders.removeAt(orderIndex);
-            debugPrint("🎊 $orderNo번 주문의 모든 픽업이 완료되어 카드를 제거합니다.");
-          }
-        }
+        // [핵심] 해당 주문 번호를 가진 카드를 KDS 화면에서 즉시 통째로 제거합니다.
+        _orders.removeWhere((order) => order.orderNo == orderNo);
       });
 
       // 알림 표시 (선택 사항)
@@ -140,6 +120,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
   @override
   void dispose() {
     _socketService.dispose(); // 앱 종료 시 소켓 닫기
+    _pageController.dispose();
     super.dispose();
   }
 
