@@ -124,6 +124,8 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     super.dispose();
   }
 
+
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading)
@@ -162,7 +164,59 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text("KDS", style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("KDS", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(width: 12),
+            // 🚀 실시간 상태 표시등 (ValueListenableBuilder 사용)
+            ValueListenableBuilder<bool>(
+              valueListenable: _socketService.isConnectedNotifier,
+              builder: (context, isConnected, child) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isConnected ? Colors.green.withOpacity(0.1) : Colors.red.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: isConnected ? Colors.green : Colors.red, width: 1.5),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(radius: 4, backgroundColor: isConnected ? Colors.green : Colors.red),
+                      const SizedBox(width: 6),
+                      Text(
+                        isConnected ? "ONLINE" : "OFFLINE",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isConnected ? Colors.green : Colors.red,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+            child: OutlinedButton(
+              onPressed: () => _showCalibrationConfirmDialog(context),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.orangeAccent, width: 1.5),
+                foregroundColor: Colors.orangeAccent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+              ),
+              child: const Text(
+                "정밀보정",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+          ),
+        ],
         backgroundColor: Colors.blueGrey[900],
         centerTitle: true,
       ),
@@ -228,6 +282,49 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                 ),
               ],
             ),
+    );
+  }
+
+  void _showCalibrationConfirmDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // 실수로 창을 닫는 것 방지
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+            SizedBox(width: 10),
+            Text("정밀보정 시작", style: TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: const Text(
+          "픽업 테이블의 좌표 보정을 시작하시겠습니까?\n\n시작하면 픽업 테이블 화면이 보정 모드로 전환되며, 완료 전까지는 정상적인 서비스 이용이 제한됩니다.",
+          style: TextStyle(color: Colors.white70, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("취소", style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange[800],
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              _socketService.sendStartCalibration(); // "START_CALIBRATION" 신호 전송
+              Navigator.pop(context);
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("픽업 테이블로 보정 신호를 보냈습니다.")),
+              );
+            },
+            child: const Text("보정 시작"),
+          ),
+        ],
+      ),
     );
   }
 
