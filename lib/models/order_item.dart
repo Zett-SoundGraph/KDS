@@ -15,14 +15,24 @@ class SubItem {
 class OrderItem {
   final String orderNo;     // 101, 102 등 순번
   final String rawOrderId;  // CSV의 긴 ID (그룹화 기준)
+  final String? nickname;
   final List<SubItem> items; // 한 주문 내의 메뉴 리스트
+
+  int drinkCount = 0;
+  int foodCount = 0;
+  int bottleCount = 0;
 
   OrderItem({
     required this.orderNo,
     required this.rawOrderId,
     required this.items,
+    this.nickname,
   });
 
   // 모든 메뉴가 ready 상태인지 확인하는 Getter
   bool get isAllReady => items.every((item) => item.status == OrderStatus.ready);
+
+  String get displayName => (nickname != null && nickname!.isNotEmpty)
+      ? nickname!
+      : "NO.$orderNo";
 }
