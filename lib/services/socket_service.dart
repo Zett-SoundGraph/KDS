@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:flutter/material.dart';
 
+import '../models/order_item.dart';
+
 class KdsSocketService {
   WebSocket? _socket;
   final String serverIp = "192.168.10.192";
@@ -14,6 +16,8 @@ class KdsSocketService {
   final ValueNotifier<bool> isConnectedNotifier = ValueNotifier<bool>(false);
   // 1. [수정] 콜백 함수가 orderNo와 menuName 두 개를 받도록 변경합니다.
   Function(String orderNo, String menuName)? onPickupSignalReceived;
+  VoidCallback? onFineTuneModeEntered;
+  Function(String status)? onStatusChanged;
 
   Future<void> connectToServer() async {
     // 이미 연결되어 있거나 시도 중이면 중복 실행 방지
@@ -63,21 +67,27 @@ class KdsSocketService {
         final String orderNo = jsonData['orderNo'].toString();
         final String menuName = jsonData['menuName']?.toString() ?? "";
         onPickupSignalReceived?.call(orderNo, menuName);
+      } else if (jsonData['type'] == 'ENTER_FINE_TUNE' || jsonData['type'] == 'VALIDATION_MODE' || jsonData['type'] == 'CALIB_EXIT') {
+        onStatusChanged?.call(jsonData['type']);
       }
     } catch (e) {
     }
   }
 
-  void sendOrderReady(String orderNo, String menuName) {
+  void sendOrderReady(OrderItem order, String menuName) {
     if (_socket != null && _socket!.readyState == WebSocket.open) {
       Map<String, dynamic> data = {
         "type": "ORDER_READY",
-        "orderNo": orderNo,
+        "orderNo": order.orderNo,
         "menuName": menuName,
+        "drinkCount": order.drinkCount,
+        "foodCount": order.foodCount,
+        "bottleCount": order.bottleCount,
+        "nickname": order.nickname ?? "",
         "timestamp": DateTime.now().toIso8601String(),
       };
       _socket!.add(jsonEncode(data));
-      print("🚀 서버로 ORDER_READY 전송: $orderNo ($menuName)");
+      print("🚀 서버로 ORDER_READY 전송: ${order.orderNo} ($menuName)");
     } else {
       print("⚠️ 서버 연결 끊김");
     }
@@ -119,6 +129,17 @@ class KdsSocketService {
       print("🎯 서버로 START_CALIBRATION 신호 전송");
     } else {
       print("⚠️ 서버 연결 끊김: 신호를 보낼 수 없습니다.");
+    }
+  }
+
+  void sendFineTuneControl(String subType, {dynamic value}) {
+    if (_socket?.readyState == WebSocket.open) {
+      _socket!.add(jsonEncode({
+        "type": "FINE_TUNE_CONTROL",
+        "subType": subType,
+        "value": value,
+        "timestamp": DateTime.now().toIso8601String(),
+      }));
     }
   }
 }

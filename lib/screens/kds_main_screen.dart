@@ -5,6 +5,7 @@ import 'package:flutter/services.dart' show rootBundle; // CSV 로드용
 import 'package:csv/csv.dart'; // CSV 파싱용
 import '../models/order_item.dart';
 import '../services/socket_service.dart';
+import '../services/test_name_provider.dart';
 
 class KdsMainScreen extends StatefulWidget {
   const KdsMainScreen({super.key});
@@ -21,12 +22,34 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
   List<OrderItem> _orders = [];
   bool _isLoading = true;
   int _currentPage = 0;
+  bool _isRemoteCalibrating = false;
+  int _selectedPoint = 0;
+  bool _isCalibOverlayVisible = false;
+  bool _isRemoteVisible = false;
 
   @override
   void initState() {
     super.initState();
     _socketService.connectToServer();
     _loadCsvData();
+
+    _socketService.onStatusChanged = (status) {
+      if (!mounted) return;
+      setState(() {
+        if (status == "ENTER_FINE_TUNE") {
+          _selectedPoint = 0;
+          _isCalibOverlayVisible = false; // 차단막 닫고
+          _isRemoteVisible = true;       // 리모컨 켬
+        } else if (status == "VALIDATION_MODE") {
+          _isCalibOverlayVisible = true;  // 리모컨 닫고 차단막 켬
+          _isRemoteVisible = false;
+        } else if (status == "CALIB_EXIT") {
+          _isCalibOverlayVisible = false; // 모두 닫고 주문 목록으로
+          _isRemoteVisible = false;
+          _selectedPoint = 0;
+        }
+      });
+    };
 
     // 수정된 부분: orderNo뿐만 아니라 menuName도 함께 받습니다.
     _socketService.onPickupSignalReceived = (orderNo, menuName) {
@@ -65,20 +88,33 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
 
       Map<String, OrderItem> groupMap = {};
       int currentSequence = 101;
-
+      final random = Random();
       for (var i = 1; i < csvTable.length; i++) {
         final row = csvTable[i];
         if (row.length < 7) continue;
 
         String rawId = row[0].toString(); // 원본 긴 ID
         String menuName = row[6].toString();
+        int type = int.tryParse(row[7].toString()) ?? 0;
 
         if (!groupMap.containsKey(rawId)) {
+          String? assignedNickname = (Random().nextBool())
+              ? TestNameProvider.getNameForId(currentSequence)
+              : null;
           groupMap[rawId] = OrderItem(
             orderNo: (currentSequence++).toString(),
             rawOrderId: rawId,
+            nickname: assignedNickname,
             items: [],
           );
+        }
+
+        if (type == 1) {
+          groupMap[rawId]!.drinkCount++;
+        } else if (type == 2) {
+          groupMap[rawId]!.foodCount++;
+        } else if (type == 3) {
+          groupMap[rawId]!.bottleCount++;
         }
         // 해당 그룹에 서브 아이템 추가
         groupMap[rawId]!.items.add(SubItem(menuName: menuName));
@@ -116,6 +152,15 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
   //     _orders.add(order); // 리스트 맨 뒤로 보냄
   //   });
   // }
+  void _onStartCalibration() {
+    _socketService.sendStartCalibration();
+    setState(() {
+      _selectedPoint = 0;
+      _isCalibOverlayVisible = true;
+      _isRemoteVisible = false;
+      _isRemoteCalibrating = true;
+    });
+  }
 
   @override
   void dispose() {
@@ -220,68 +265,168 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         backgroundColor: Colors.blueGrey[900],
         centerTitle: true,
       ),
-      body: _orders.isEmpty
-          ? const Center(
-              child:
-                  Text("주문 데이터가 없습니다.", style: TextStyle(color: Colors.white)))
-          : Column(
-              children: [
-                // 2. PageView가 상단 공간을 모두 차지하도록 Expanded로 감싸기
-                Expanded(
-                  child: PageView.builder(
-                    controller: _pageController,
-                    itemCount: pageCount,
-                    onPageChanged: (int page) {
-                      setState(() {
-                        _currentPage = page;
-                      });
-                    },
-                    itemBuilder: (context, pageIndex) {
-                      // 3. 현재 페이지의 데이터 슬라이싱
-                      int start = pageIndex * itemsPerPage;
-                      int end = (start + itemsPerPage < _orders.length) ? start + itemsPerPage : _orders.length;
-                      final pageOrders = _orders.sublist(start, end);
-
-                      return LayoutBuilder(
-                        builder: (context, constraints) {
-                          // 5. 현재 결정된 rowCount에 맞춰 높이 계산
-                          // 간격 공식: (줄 수 + 1) * 간격12
-                          double totalSpacing = (rowCount + 1) * 12.0;
-                          final double dynamicHeight = (constraints.maxHeight - totalSpacing) / rowCount;
-
-                          return Padding(
-                            padding: const EdgeInsets.all(12.0),
-                            child: GridView.builder(
-                              physics: const NeverScrollableScrollPhysics(),
-                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: crossAxisCount,
-                                mainAxisExtent: dynamicHeight,
-                                mainAxisSpacing: 12,
-                                crossAxisSpacing: 12,
+      body: Stack(
+            children: [
+              _orders.isEmpty
+                  ? const Center(child: Text("주문 데이터가 없습니다.", style: TextStyle(color: Colors.white)))
+                  : Column(
+                children: [
+                  Expanded(
+                    child: PageView.builder(
+                      controller: _pageController,
+                      itemCount: pageCount,
+                      onPageChanged: (int page) => setState(() => _currentPage = page),
+                      itemBuilder: (context, pageIndex) {
+                        int start = pageIndex * itemsPerPage;
+                        int end = (start + itemsPerPage < _orders.length) ? start + itemsPerPage : _orders.length;
+                        final pageOrders = _orders.sublist(start, end);
+                        return LayoutBuilder(
+                          builder: (context, constraints) {
+                            double totalSpacing = (rowCount + 1) * 12.0;
+                            final double dynamicHeight = (constraints.maxHeight - totalSpacing) / rowCount;
+                            return Padding(
+                              padding: const EdgeInsets.all(12.0),
+                              child: GridView.builder(
+                                physics: const NeverScrollableScrollPhysics(),
+                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: crossAxisCount,
+                                  mainAxisExtent: dynamicHeight,
+                                  mainAxisSpacing: 12,
+                                  crossAxisSpacing: 12,
+                                ),
+                                itemCount: pageOrders.length,
+                                itemBuilder: (context, index) => _buildOrderCard(pageOrders[index]),
                               ),
-                              itemCount: pageOrders.length,
-                              itemBuilder: (context, index) => _buildOrderCard(pageOrders[index]),
-                            ),
-                          );
-                        },
-                      );
-                    },
+                            );
+                          },
+                        );
+                      },
+                    ),
                   ),
-                ),
-                // 3. 페이지 번호 표시 영역 (하단 고정)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 20.0),
-                  child: Text(
-                    "${_currentPage + 1} / $pageCount",
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 20.0),
+                    child: Text("${_currentPage + 1} / $pageCount",
+                        style: const TextStyle(color: Colors.white70, fontSize: 16, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+
+              // [레이어 2] 중간: 리모컨 (미세 조정 시에만 표시)
+              if (_isRemoteVisible)
+                Positioned.fill(child: _buildRemoteController()),
+
+              // [레이어 3] 최상단: 차단막 (9점 보정 및 검증 화면일 때 모든 것을 덮음)
+              if (_isCalibOverlayVisible)
+                Container(
+                  width: double.infinity,
+                  height: double.infinity,
+                  color: Colors.black.withOpacity(0.9),
+                  child: const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(color: Colors.orangeAccent, strokeWidth: 6),
+                        const SizedBox(height: 30),
+                        const Text("픽업 테이블 보정 진행 중...",
+                            style: TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 10),
+                        const Text("픽업 테이블의 안내에 따라 컵을 옮겨주세요.",
+                            style: TextStyle(color: Colors.white54, fontSize: 18)),
+                      ],
                     ),
                   ),
                 ),
-              ],
+            ],
+          ),
+    );
+  }
+
+  Widget _buildRemoteController() {
+    final List<int> gridMapping = [
+      1, 5, 2,
+      8, 0, 6,
+      4, 7, 3,
+    ];
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.all(30),
+      child: Column(
+        children: [
+          const Text("미세 보정 컨트롤", style: TextStyle(color: Colors.orangeAccent, fontSize: 28, fontWeight: FontWeight.bold)),
+          const Spacer(),
+
+          // 1. 원형 숫자 패드 (물리적 배치와 동일)
+          SizedBox(
+            width: 400,
+            child: GridView.builder(
+              shrinkWrap: true,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3, mainAxisSpacing: 20, crossAxisSpacing: 20),
+              itemCount: 9,
+              itemBuilder: (context, index) {
+                int pointIndex = gridMapping[index];
+                bool isSelected = _selectedPoint == pointIndex;
+                return ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    shape: const CircleBorder(), // 👈 원형으로 변경
+                    padding: const EdgeInsets.all(20),
+                    backgroundColor: isSelected ? Colors.orangeAccent : Colors.grey[800],
+                  ),
+                  onPressed: () {
+                    setState(() => _selectedPoint = pointIndex);
+                    _socketService.sendFineTuneControl("SELECT", value: pointIndex);
+                  },
+                  child: Text("${pointIndex + 1}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                );
+              },
             ),
+          ),
+
+          const Spacer(),
+
+          // 2. 방향키 (미세 이동)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _dirBtn(Icons.arrow_back, -1, 0),
+              Column(
+                children: [
+                  _dirBtn(Icons.arrow_upward, 0, -1),
+                  const SizedBox(height: 60), // 상하 버튼 간격
+                  _dirBtn(Icons.arrow_downward, 0, 1),
+                ],
+              ),
+              _dirBtn(Icons.arrow_forward, 1, 0),
+            ],
+          ),
+
+          const Spacer(),
+
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green[700],
+              minimumSize: const Size(double.infinity, 80),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+            ),
+            onPressed: () {
+              _socketService.sendFineTuneControl("COMPLETE");
+            },
+            child: const Text("미세 조정 완료", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dirBtn(IconData icon, double dx, double dy) {
+    return GestureDetector(
+      onTap: () => _socketService.sendFineTuneControl("MOVE", value: {"dx": dx, "dy": dy}),
+      child: Container(
+        width: 70, height: 70,
+        margin: const EdgeInsets.all(5),
+        decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
+        child: Icon(icon, color: Colors.white, size: 35),
+      ),
     );
   }
 
@@ -314,6 +459,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
               foregroundColor: Colors.white,
             ),
             onPressed: () {
+              _onStartCalibration();
               _socketService.sendStartCalibration(); // "START_CALIBRATION" 신호 전송
               Navigator.pop(context);
 
@@ -343,6 +489,13 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text("NO. ${order.orderNo}", style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
+          if (order.nickname != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(color: Colors.orangeAccent, borderRadius: BorderRadius.circular(4)),
+              child: Text(order.nickname!,
+                  style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 14)),
+            ),
           const Divider(color: Colors.white24, height: 15),
 
           // 1. 메뉴 리스트 영역 (스크롤 가능)
@@ -377,7 +530,10 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                               subItem.status = OrderStatus.ready;
                             });
                             // 필요 시 소켓으로 부분 완료 신호 전송
-                            _socketService.sendOrderReady(order.orderNo, subItem.menuName);
+                            _socketService.sendOrderReady(
+                                order,
+                                subItem.menuName
+                            );
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.green[700],
