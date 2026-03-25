@@ -3,9 +3,11 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle; // CSV 로드용
 import 'package:csv/csv.dart'; // CSV 파싱용
+import '../components/order_card_widget.dart';
 import '../models/order_item.dart';
 import '../services/socket_service.dart';
 import '../services/test_name_provider.dart';
+import '../services/printer_service.dart';
 
 class KdsMainScreen extends StatefulWidget {
   const KdsMainScreen({super.key});
@@ -27,9 +29,19 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
   bool _isCalibOverlayVisible = false;
   bool _isRemoteVisible = false;
 
+  final PrinterService _printerService = PrinterService();
+
   @override
   void initState() {
     super.initState();
+    _printerService.listenToLabels(
+      onDetached: () {
+        print("📢 [확인] 프린터에서 라벨이 제거되었습니다.");
+      },
+      onAttached: () {
+        print("📢 [확인] 프린터에 라벨이 감지되었습니다.");
+      },
+    );
     _socketService.connectToServer();
     _loadCsvData();
 
@@ -161,11 +173,16 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
       _isRemoteCalibrating = true;
     });
   }
+  final List<String> testMenus = [
+    "아이스 아메리카노", "카페 라떼", "바닐라 빈 라떼", "자몽 에이드", "딸기 스무디",
+    "블루베리 머핀", "초코칩 쿠키", "치즈 케이크", "에스프레소", "콜드브루"
+  ];
 
   @override
   void dispose() {
     _socketService.dispose(); // 앱 종료 시 소켓 닫기
     _pageController.dispose();
+    _printerService.dispose();
     super.dispose();
   }
 
@@ -245,6 +262,35 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
           ],
         ),
         actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+            child: OutlinedButton(
+              onPressed: () => _printerService.printTest(testMenus),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.cyanAccent, width: 1.5),
+                foregroundColor: Colors.cyanAccent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text("텍스트출력", style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+
+          // 2. 새로운 이미지 방식 (테스트 대상) 🚀 추가된 부분
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+            child: OutlinedButton(
+              onPressed: () {
+                // 테스트용 데이터로 위젯 생성하여 전달
+                _printerService.printImageLabel(OrderCardWidget(orderNo: "105", menus: testMenus));
+              },
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.cyanAccent, width: 1.5),
+                foregroundColor: Colors.cyanAccent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text("이미지출력", style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
             child: OutlinedButton(
