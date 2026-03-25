@@ -44,7 +44,10 @@ android {
     }
 
     sourceSets {
-        main.java.srcDirs += 'src/main/kotlin'
+        main {
+            java.srcDirs += 'src/main/kotlin'
+            jniLibs.srcDirs = ['src/main/jniLibs'] // main 안으로 넣어주세요
+        }
     }
 
     defaultConfig {
@@ -53,6 +56,10 @@ android {
         targetSdk 35
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
+        ndk {
+            // 우리가 가진 .so 파일 폴더 이름들과 맞춰줍니다.
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
     }
 
     signingConfigs {
@@ -79,5 +86,6 @@ android {
 }
 
 dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
     implementation "org.jetbrains.kotlin:kotlin-stdlib"
 }
