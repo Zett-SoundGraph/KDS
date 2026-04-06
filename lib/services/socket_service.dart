@@ -16,7 +16,6 @@ class KdsSocketService {
   final ValueNotifier<bool> isConnectedNotifier = ValueNotifier<bool>(false);
   // 1. [수정] 콜백 함수가 orderNo와 menuName 두 개를 받도록 변경합니다.
   Function(String orderNo, String menuName)? onPickupSignalReceived;
-  VoidCallback? onFineTuneModeEntered;
   Function(String status)? onStatusChanged;
 
   Future<void> connectToServer() async {
@@ -67,7 +66,7 @@ class KdsSocketService {
         final String orderNo = jsonData['orderNo'].toString();
         final String menuName = jsonData['menuName']?.toString() ?? "";
         onPickupSignalReceived?.call(orderNo, menuName);
-      } else if (jsonData['type'] == 'ENTER_FINE_TUNE' || jsonData['type'] == 'VALIDATION_MODE' || jsonData['type'] == 'CALIB_EXIT') {
+      } else if (jsonData['type'] == 'VALIDATION_MODE' || jsonData['type'] == 'CALIB_EXIT') {
         onStatusChanged?.call(jsonData['type']);
       }
     } catch (e) {
@@ -119,10 +118,11 @@ class KdsSocketService {
     isConnectedNotifier.dispose();
   }
 
-  void sendStartCalibration() {
+  void sendStartCalibration(double height) {
     if (_socket != null && _socket!.readyState == WebSocket.open) {
       Map<String, dynamic> data = {
         "type": "START_CALIBRATION", // 약속된 메시지 타입
+        "height": height,
         "timestamp": DateTime.now().toIso8601String(),
       };
       _socket!.add(jsonEncode(data));
@@ -132,14 +132,14 @@ class KdsSocketService {
     }
   }
 
-  void sendFineTuneControl(String subType, {dynamic value}) {
-    if (_socket?.readyState == WebSocket.open) {
-      _socket!.add(jsonEncode({
-        "type": "FINE_TUNE_CONTROL",
-        "subType": subType,
-        "value": value,
-        "timestamp": DateTime.now().toIso8601String(),
-      }));
-    }
-  }
+  // void sendFineTuneControl(String subType, {dynamic value}) {
+  //   if (_socket?.readyState == WebSocket.open) {
+  //     _socket!.add(jsonEncode({
+  //       "type": "FINE_TUNE_CONTROL",
+  //       "subType": subType,
+  //       "value": value,
+  //       "timestamp": DateTime.now().toIso8601String(),
+  //     }));
+  //   }
+  // }
 }
