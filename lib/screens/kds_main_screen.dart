@@ -24,10 +24,8 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
   List<OrderItem> _orders = [];
   bool _isLoading = true;
   int _currentPage = 0;
-  bool _isRemoteCalibrating = false;
-  int _selectedPoint = 0;
+
   bool _isCalibOverlayVisible = false;
-  bool _isRemoteVisible = false;
 
   final PrinterService _printerService = PrinterService();
 
@@ -48,17 +46,10 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     _socketService.onStatusChanged = (status) {
       if (!mounted) return;
       setState(() {
-        if (status == "ENTER_FINE_TUNE") {
-          _selectedPoint = 0;
-          _isCalibOverlayVisible = false; // 차단막 닫고
-          _isRemoteVisible = true;       // 리모컨 켬
-        } else if (status == "VALIDATION_MODE") {
-          _isCalibOverlayVisible = true;  // 리모컨 닫고 차단막 켬
-          _isRemoteVisible = false;
+        if (status == "VALIDATION_MODE") {
+          _isCalibOverlayVisible = true;
         } else if (status == "CALIB_EXIT") {
-          _isCalibOverlayVisible = false; // 모두 닫고 주문 목록으로
-          _isRemoteVisible = false;
-          _selectedPoint = 0;
+          _isCalibOverlayVisible = false;
         }
       });
     };
@@ -164,13 +155,13 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
   //     _orders.add(order); // 리스트 맨 뒤로 보냄
   //   });
   // }
-  void _onStartCalibration() {
-    _socketService.sendStartCalibration();
+
+  final TextEditingController _heightController = TextEditingController(text: "1000"); // 기본값 1000
+
+  void _onStartCalibration(double height) {
+    _socketService.sendStartCalibration(height);
     setState(() {
-      _selectedPoint = 0;
       _isCalibOverlayVisible = true;
-      _isRemoteVisible = false;
-      _isRemoteCalibrating = true;
     });
   }
   final List<String> testMenus = [
@@ -180,6 +171,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
 
   @override
   void dispose() {
+    _heightController.dispose();
     _socketService.dispose(); // 앱 종료 시 소켓 닫기
     _pageController.dispose();
     _printerService.dispose();
@@ -225,6 +217,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     int pageCount = _orders.isEmpty ? 1 : (_orders.length / itemsPerPage).ceil();
     return Scaffold(
       backgroundColor: Colors.black,
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: Row(
           mainAxisSize: MainAxisSize.min,
@@ -358,8 +351,8 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
               ),
 
               // [레이어 2] 중간: 리모컨 (미세 조정 시에만 표시)
-              if (_isRemoteVisible)
-                Positioned.fill(child: _buildRemoteController()),
+              // if (_isRemoteVisible)
+              //   Positioned.fill(child: _buildRemoteController()),
 
               // [레이어 3] 최상단: 차단막 (9점 보정 및 검증 화면일 때 모든 것을 덮음)
               if (_isCalibOverlayVisible)
@@ -387,94 +380,94 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     );
   }
 
-  Widget _buildRemoteController() {
-    final List<int> gridMapping = [
-      1, 5, 2,
-      8, 0, 6,
-      4, 7, 3,
-    ];
-    return Container(
-      color: Colors.black,
-      padding: const EdgeInsets.all(30),
-      child: Column(
-        children: [
-          const Text("미세 보정 컨트롤", style: TextStyle(color: Colors.orangeAccent, fontSize: 28, fontWeight: FontWeight.bold)),
-          const Spacer(),
+  // Widget _buildRemoteController() {
+  //   final List<int> gridMapping = [
+  //     1, 5, 2,
+  //     8, 0, 6,
+  //     4, 7, 3,
+  //   ];
+  //   return Container(
+  //     color: Colors.black,
+  //     padding: const EdgeInsets.all(30),
+  //     child: Column(
+  //       children: [
+  //         const Text("미세 보정 컨트롤", style: TextStyle(color: Colors.orangeAccent, fontSize: 28, fontWeight: FontWeight.bold)),
+  //         const Spacer(),
+  //
+  //         // 1. 원형 숫자 패드 (물리적 배치와 동일)
+  //         SizedBox(
+  //           width: 400,
+  //           child: GridView.builder(
+  //             shrinkWrap: true,
+  //             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+  //                 crossAxisCount: 3, mainAxisSpacing: 20, crossAxisSpacing: 20),
+  //             itemCount: 9,
+  //             itemBuilder: (context, index) {
+  //               int pointIndex = gridMapping[index];
+  //               bool isSelected = _selectedPoint == pointIndex;
+  //               return ElevatedButton(
+  //                 style: ElevatedButton.styleFrom(
+  //                   shape: const CircleBorder(), // 👈 원형으로 변경
+  //                   padding: const EdgeInsets.all(20),
+  //                   backgroundColor: isSelected ? Colors.orangeAccent : Colors.grey[800],
+  //                 ),
+  //                 onPressed: () {
+  //                   setState(() => _selectedPoint = pointIndex);
+  //                   _socketService.sendFineTuneControl("SELECT", value: pointIndex);
+  //                 },
+  //                 child: Text("${pointIndex + 1}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+  //               );
+  //             },
+  //           ),
+  //         ),
+  //
+  //         const Spacer(),
+  //
+  //         // 2. 방향키 (미세 이동)
+  //         Row(
+  //           mainAxisAlignment: MainAxisAlignment.center,
+  //           children: [
+  //             _dirBtn(Icons.arrow_back, -1, 0),
+  //             Column(
+  //               children: [
+  //                 _dirBtn(Icons.arrow_upward, 0, -1),
+  //                 const SizedBox(height: 60), // 상하 버튼 간격
+  //                 _dirBtn(Icons.arrow_downward, 0, 1),
+  //               ],
+  //             ),
+  //             _dirBtn(Icons.arrow_forward, 1, 0),
+  //           ],
+  //         ),
+  //
+  //         const Spacer(),
+  //
+  //         ElevatedButton(
+  //           style: ElevatedButton.styleFrom(
+  //             backgroundColor: Colors.green[700],
+  //             minimumSize: const Size(double.infinity, 80),
+  //             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+  //           ),
+  //           onPressed: () {
+  //             _socketService.sendFineTuneControl("COMPLETE");
+  //           },
+  //           child: const Text("미세 조정 완료", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
 
-          // 1. 원형 숫자 패드 (물리적 배치와 동일)
-          SizedBox(
-            width: 400,
-            child: GridView.builder(
-              shrinkWrap: true,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3, mainAxisSpacing: 20, crossAxisSpacing: 20),
-              itemCount: 9,
-              itemBuilder: (context, index) {
-                int pointIndex = gridMapping[index];
-                bool isSelected = _selectedPoint == pointIndex;
-                return ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    shape: const CircleBorder(), // 👈 원형으로 변경
-                    padding: const EdgeInsets.all(20),
-                    backgroundColor: isSelected ? Colors.orangeAccent : Colors.grey[800],
-                  ),
-                  onPressed: () {
-                    setState(() => _selectedPoint = pointIndex);
-                    _socketService.sendFineTuneControl("SELECT", value: pointIndex);
-                  },
-                  child: Text("${pointIndex + 1}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                );
-              },
-            ),
-          ),
-
-          const Spacer(),
-
-          // 2. 방향키 (미세 이동)
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _dirBtn(Icons.arrow_back, -1, 0),
-              Column(
-                children: [
-                  _dirBtn(Icons.arrow_upward, 0, -1),
-                  const SizedBox(height: 60), // 상하 버튼 간격
-                  _dirBtn(Icons.arrow_downward, 0, 1),
-                ],
-              ),
-              _dirBtn(Icons.arrow_forward, 1, 0),
-            ],
-          ),
-
-          const Spacer(),
-
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green[700],
-              minimumSize: const Size(double.infinity, 80),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-            ),
-            onPressed: () {
-              _socketService.sendFineTuneControl("COMPLETE");
-            },
-            child: const Text("미세 조정 완료", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _dirBtn(IconData icon, double dx, double dy) {
-    return GestureDetector(
-      onTap: () => _socketService.sendFineTuneControl("MOVE", value: {"dx": dx, "dy": dy}),
-      child: Container(
-        width: 70, height: 70,
-        margin: const EdgeInsets.all(5),
-        decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
-        child: Icon(icon, color: Colors.white, size: 35),
-      ),
-    );
-  }
+  // Widget _dirBtn(IconData icon, double dx, double dy) {
+  //   return GestureDetector(
+  //     onTap: () => _socketService.sendFineTuneControl("MOVE", value: {"dx": dx, "dy": dy}),
+  //     child: Container(
+  //       width: 70, height: 70,
+  //       margin: const EdgeInsets.all(5),
+  //       decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
+  //       child: Icon(icon, color: Colors.white, size: 35),
+  //     ),
+  //   );
+  // }
 
   void _showCalibrationConfirmDialog(BuildContext context) {
     showDialog(
@@ -485,14 +478,35 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: const Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent),
+            Icon(Icons.straighten, color: Colors.orangeAccent),
             SizedBox(width: 10),
-            Text("정밀보정 시작", style: TextStyle(color: Colors.white)),
+            Text("설치 높이 입력", style: TextStyle(color: Colors.white)),
           ],
         ),
-        content: const Text(
-          "픽업 테이블의 좌표 보정을 시작하시겠습니까?\n\n시작하면 픽업 테이블 화면이 보정 모드로 전환되며, 완료 전까지는 정상적인 서비스 이용이 제한됩니다.",
-          style: TextStyle(color: Colors.white70, height: 1.5),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "현재 설치된 센서의 높이(mm)를 입력해주세요.\n정확한 보정을 위해 필수적인 값입니다.",
+              style: TextStyle(color: Colors.white70, height: 1.5, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _heightController,
+              keyboardType: TextInputType.number,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+              decoration: InputDecoration(
+                labelText: "설치 높이 (mm 단위)",
+                labelStyle: const TextStyle(color: Colors.orangeAccent),
+                enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+                focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.orangeAccent)),
+                suffixText: "mm",
+                suffixStyle: const TextStyle(color: Colors.white54),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -505,12 +519,18 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
               foregroundColor: Colors.white,
             ),
             onPressed: () {
-              _onStartCalibration();
-              _socketService.sendStartCalibration(); // "START_CALIBRATION" 신호 전송
+              // 입력값 검증 및 변환
+              double? inputHeight = double.tryParse(_heightController.text);
+              if (inputHeight == null || inputHeight <= 0) {
+                // 잘못된 입력 시 기본값 혹은 경고 (여기서는 1000으로 방어)
+                inputHeight = 1000.0;
+              }
+
+              _onStartCalibration(inputHeight); // 입력된 높이와 함께 시작
               Navigator.pop(context);
 
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("픽업 테이블로 보정 신호를 보냈습니다.")),
+                SnackBar(content: Text("설치 높이 ${inputHeight.toInt()}mm 설정 및 보정 시작")),
               );
             },
             child: const Text("보정 시작"),
