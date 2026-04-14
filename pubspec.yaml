@@ -38,6 +38,8 @@ dependencies:
   screenshot: ^3.0.0
   esc_pos_utils_plus: ^2.0.3
   qr_flutter: ^4.1.0
+  usb_serial: ^0.5.2
+  encrypt: ^5.0.3
 
 dev_dependencies:
   flutter_test:
