@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -5,9 +6,11 @@ import 'package:flutter/services.dart' show rootBundle; // CSV 로드용
 import 'package:csv/csv.dart'; // CSV 파싱용
 import '../components/order_card_widget.dart';
 import '../models/order_item.dart';
+import '../services/machine_bridge_service.dart';
 import '../services/socket_service.dart';
 import '../services/test_name_provider.dart';
 import '../services/printer_service.dart';
+import 'package:usb_serial/usb_serial.dart';
 
 class KdsMainScreen extends StatefulWidget {
   const KdsMainScreen({super.key});
@@ -20,6 +23,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
   // 1. 소켓 서비스 인스턴스 생성
   final KdsSocketService _socketService = KdsSocketService();
   final PageController _pageController = PageController();
+  final MachineBridgeService _machineService = MachineBridgeService();
 
   List<OrderItem> _orders = [];
   bool _isLoading = true;
@@ -71,6 +75,39 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         ),
       );
     };
+    //_startUsbHeartbeat();
+  }
+
+  Timer? _usbKeepAliveTimer;
+  void _startUsbHeartbeat() {
+    _usbKeepAliveTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+      try {
+        List<UsbDevice> devices = await UsbSerial.listDevices();
+
+        if (devices.isNotEmpty) {
+          // 🚀 포트 생성을 시도합니다. (이때 권한이 없으면 시스템 팝업을 준비합니다.)
+          UsbPort? port = await devices[0].create();
+
+          if (port != null) {
+            // 🚀 포트를 여는 순간, 권한이 없다면 안드로이드 OS가 "허용하시겠습니까?" 팝업을 띄웁니다.
+            bool openResult = await port.open();
+
+            if (openResult) {
+              debugPrint("💓 [USB Heartbeat] Port Poked & Opened (Keep Awake)");
+              // 하트비트 목적이므로 열었다가 바로 닫습니다.
+              await port.close();
+            } else {
+              debugPrint("⚠️ [USB Heartbeat] Failed to open port (Wait for permission)");
+            }
+          }
+        }
+        debugPrint("🔍 [USB Heartbeat] Found: ${devices.length}");
+      } catch (e) {
+        // 권한 거부 시 여기서 SecurityException이 잡히지만,
+        // 앱이 계속 시도하면 결국 사용자가 허용할 수 있는 기회를 줍니다.
+        debugPrint("❌ [USB Heartbeat] Error/Pending: $e");
+      }
+    });
   }
 
   Future<void> _loadCsvData() async {
@@ -90,7 +127,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
       debugPrint("📊 [결과] 파싱된 행 개수: ${csvTable.length}");
 
       Map<String, OrderItem> groupMap = {};
-      int currentSequence = 101;
+      int currentSequence = 1001;
       final random = Random();
       for (var i = 1; i < csvTable.length; i++) {
         final row = csvTable[i];
@@ -171,6 +208,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
 
   @override
   void dispose() {
+    _usbKeepAliveTimer?.cancel();
     _heightController.dispose();
     _socketService.dispose(); // 앱 종료 시 소켓 닫기
     _pageController.dispose();
@@ -255,6 +293,19 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
           ],
         ),
         actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+            child: OutlinedButton.icon(
+              onPressed: () => _showMachineManagementDialog(context),
+              label: const Text("머신 관리", style: TextStyle(fontWeight: FontWeight.bold)),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.greenAccent, width: 1.5),
+                foregroundColor: Colors.greenAccent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+          ),
+
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
             child: OutlinedButton(
@@ -377,6 +428,53 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                 ),
             ],
           ),
+    );
+  }
+
+  void _showMachineManagementDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        title: Center(child: const Text("CAYE 머신 원격 관리", style: TextStyle(color: Colors.white))),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildAdminButton("시간 동기화 (Ping)", Icons.sync, Colors.blue, () {
+              _machineService.sendTimeSyncCommand("192.168.10.119"); // 0x00
+            }),
+            const SizedBox(height: 10),
+            _buildAdminButton("기기 세척 (Cleaning)", Icons.cleaning_services, Colors.orange, () {
+              _machineService.sendCleaningCommand("192.168.10.119"); // 0x01
+            }),
+            const SizedBox(height: 10),
+            _buildAdminButton("기기 헹굼 (Rinsing)", Icons.water_drop, Colors.cyan, () {
+              _machineService.sendRinsingCommand("192.168.10.119"); // 0x10
+            }),
+            const SizedBox(height: 10),
+            _buildAdminButton("현재 상태 조회", Icons.info_outline, Colors.purple, () {
+              _machineService.sendQueryStatus("192.168.10.119"); // 0x31
+            }),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("닫기")),
+        ],
+      ),
+    );
+  }
+
+// 공통 버튼 위젯
+  Widget _buildAdminButton(String label, IconData icon, Color color, VoidCallback onPressed) {
+    return SizedBox(
+      width: double.infinity,
+      height: 50,
+      child: ElevatedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, size: 20),
+        label: Text(label),
+        style: ElevatedButton.styleFrom(backgroundColor: color.withOpacity(0.8)),
+      ),
     );
   }
 
@@ -586,6 +684,43 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                           ),
                         ),
                       ),
+
+                      IconButton(
+                        icon: const Icon(Icons.play_circle_fill, color: Colors.orangeAccent, size: 28),
+                        tooltip: "머신 추출 테스트",
+                        onPressed: () {
+                          String? pKey;
+
+                          // 💡 레시피 매핑 (머신에 1, 2번으로 등록했다고 가정)
+                          if (subItem.menuName.contains("아메리카노")) {
+                            pKey = "1";
+                          } else if (subItem.menuName.contains("라떼")) {
+                            pKey = "2";
+                          }
+
+                          if (pKey != null) {
+                            // 레시피가 있는 경우 -> 제조 명령 전송
+                            _machineService.sendMakeCommand(
+                                "192.168.10.119",
+                                pKey,
+                                "${order.orderNo}.${(index + 1).toString().padLeft(2, '0')}"
+                            );
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text("🚀 ${subItem.menuName} 추출 시작!")),
+                            );
+                          } else {
+                            // 레시피가 없는 경우 -> 경고 표시 (동작 안 함)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                backgroundColor: Colors.redAccent,
+                                content: Text("⚠️ 해당 메뉴는 머신 레시피가 등록되지 않았습니다."),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+
+                      const SizedBox(width: 8),
                       // 개별 제조완료 버튼
                       SizedBox(
                         width: 70,
