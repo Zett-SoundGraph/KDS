@@ -213,6 +213,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     _socketService.dispose(); // 앱 종료 시 소켓 닫기
     _pageController.dispose();
     _printerService.dispose();
+    _machineService.dispose();
     super.dispose();
   }
 
@@ -440,20 +441,31 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            _buildAdminButton("네트워크 연결 확인 (Ping)", Icons.lan, Colors.teal, () async {
+              bool isAlive = await _machineService.checkNetworkOnly("192.168.10.193");
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  backgroundColor: isAlive ? Colors.green : Colors.red,
+                  content: Text(isAlive ? "[Caye] 기기 연결됨 (물리적 성공)" : "[Caye] 기기 연결 실패 (IP/랜선 확인)"),
+                ),
+              );
+            }),
+            const SizedBox(height: 20),
             _buildAdminButton("시간 동기화 (Ping)", Icons.sync, Colors.blue, () {
-              _machineService.sendTimeSyncCommand("192.168.10.119"); // 0x00
+              _machineService.sendTimeSyncCommand("192.168.10.193"); // 0x00
             }),
             const SizedBox(height: 10),
             _buildAdminButton("기기 세척 (Cleaning)", Icons.cleaning_services, Colors.orange, () {
-              _machineService.sendCleaningCommand("192.168.10.119"); // 0x01
+              _machineService.sendCleaningCommand("192.168.10.193"); // 0x01
             }),
             const SizedBox(height: 10),
             _buildAdminButton("기기 헹굼 (Rinsing)", Icons.water_drop, Colors.cyan, () {
-              _machineService.sendRinsingCommand("192.168.10.119"); // 0x10
+              _machineService.sendRinsingCommand("192.168.10.193"); // 0x10
             }),
             const SizedBox(height: 10),
             _buildAdminButton("현재 상태 조회", Icons.info_outline, Colors.purple, () {
-              _machineService.sendQueryStatus("192.168.10.119"); // 0x31
+              _machineService.sendQueryStatus("192.168.10.193"); // 0x31
             }),
           ],
         ),
@@ -701,7 +713,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                           if (pKey != null) {
                             // 레시피가 있는 경우 -> 제조 명령 전송
                             _machineService.sendMakeCommand(
-                                "192.168.10.119",
+                                "192.168.10.193",
                                 pKey,
                                 "${order.orderNo}.${(index + 1).toString().padLeft(2, '0')}"
                             );
