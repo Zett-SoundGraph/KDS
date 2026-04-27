@@ -5,10 +5,19 @@ class SubItem {
   final String menuName;
   OrderStatus status;
 
+  double progress = 0.0;
+  List<String> logs = [];
+  bool isExtracting = false;
+  bool isError = false;
+  String? errorCode;
+  String currentStage = "대기 중";
+
   SubItem({
     required this.menuName,
     this.status = OrderStatus.pending,
-  });
+  }) {
+    logs = ["🚀 제조 대기 중..."];
+  }
 }
 
 // 주문 카드 전체 정보

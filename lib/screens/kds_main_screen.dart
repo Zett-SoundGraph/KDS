@@ -4,7 +4,10 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle; // CSV 로드용
 import 'package:csv/csv.dart'; // CSV 파싱용
+import 'package:kds/screens/caye_management_screen.dart';
+import '../components/extraction_monitor_dialog.dart';
 import '../components/order_card_widget.dart';
+import '../models/manufacturing_queue_item.dart';
 import '../models/order_item.dart';
 import '../services/machine_bridge_service.dart';
 import '../services/socket_service.dart';
@@ -75,7 +78,158 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         ),
       );
     };
+    _machineService.extractionStream.listen((progressData) {
+      _updateGlobalExtractionState(progressData);
+    });
     //_startUsbHeartbeat();
+  }
+
+  void _updateGlobalExtractionState(ExtractionProgress progress) {
+    final data = progress.data;
+    if (progress.code == 0x23) {
+      debugPrint("🔍 [0x23 상태 보고] $data");
+
+      // 🚀 [해결 2] 머신의 응답 키값은 'beverageStatus' 입니다!
+      int bevStatus = data['beverageStatus'] ?? -1;
+
+      // 1은 바쁨, 0이 대기(가능) 상태입니다.
+      if (bevStatus == 1) {
+        debugPrint("🟢 기기 준비 완료(1)! 루프 종료 및 제조 명령(0x20) 발사!");
+        _availabilityTimer?.cancel(); // 루프 정지!
+        _acceptMachinePackets = false; // 혹시 모르니 발사 전 한 번 더 방어막 확인
+        _processNextInQueue(); // 진짜 명령 쏘기!
+      } else {
+        debugPrint("🔴 기기 아직 바쁨 (상태값: $bevStatus)... 다음 루프 대기");
+      }
+      return;
+    }
+    if (progress.code == 0x20) {
+      if (data['result'] == 0) {
+        // 머신이 바빠서 거절함 -> 0.5초(500ms) 뒤에 현재 대기열 첫 번째 항목 다시 전송!
+        debugPrint("⚠️ 머신 바쁨 (result: 0) -> 0.5초 후 재시도...");
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted && _manufacturingQueue.isNotEmpty) {
+            final retryTask = _manufacturingQueue.first;
+            _machineService.sendMakeCommand(retryTask.machineIp, retryTask.productKey, retryTask.orderNo);
+          }
+        });
+      } else if (data['result'] == 1) {
+        // 수락됨! 본격적인 추출 시작
+        debugPrint("✅ 머신 수락 (result: 1) -> 추출 대기...");
+        _acceptMachinePackets = true;
+      }
+      return; // 0x20 패킷은 여기서 처리 끝 (아래의 게이지바 로직으로 안 내려감)
+    }
+    final String? incomingOrderNo = data['orderNo']?.toString();
+
+    // 1. 머신 펌웨어가 업데이트되어 orderNo가 정상적으로 들어오는 경우 (미래를 위한 방어 코드)
+    if (incomingOrderNo != null && incomingOrderNo.isNotEmpty) {
+      final parts = incomingOrderNo.split('.');
+      final String mainOrderNo = parts[0];
+      final int subItemIndex = parts.length > 1 ? (int.tryParse(parts[1]) ?? 1) - 1 : 0;
+
+      for (var order in _orders) {
+        if (order.orderNo == mainOrderNo) {
+          if (subItemIndex >= 0 && subItemIndex < order.items.length) {
+            _applyDataToSubItem(order, order.items[subItemIndex], progress);
+            if (mounted) setState(() {});
+          }
+          break;
+        }
+      }
+    }
+    // 2. 💡 현재 상황: 머신이 0x24, 0x22 패킷에서 orderNo를 주지 않는 경우 ("" 로 올 때)
+    else {
+      if (_manufacturingQueue.isEmpty) return;
+      if (!_acceptMachinePackets) return; // 🚀 [추가] 방어막이 쳐져 있으면 찌꺼기 패킷 무시!
+
+      // 🚀 [완벽 수정] 화면 리스트를 뒤질 필요 없이, 큐의 첫 번째 녀석에게 바로 데이터 직행!
+      final currentTask = _manufacturingQueue.first;
+      _applyDataToSubItem(currentTask.order, currentTask.subItem, progress);
+
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _applyDataToSubItem(OrderItem order, SubItem item, ExtractionProgress progress) {
+    final data = progress.data;
+    String? newLog;
+
+    if (progress.code == 0x24) { // 실시간 파라미터
+      final double currentTime = (data['extractTime'] ?? 0).toDouble();
+      final double targetTime = (data['targetExtractTime'] ?? 1).toDouble();
+      final double powder = (data['powderWeight'] ?? 0).toDouble();
+      final double targetPowder = (data['targetPowderWeight'] ?? 1).toDouble();
+
+      if (currentTime > 0) {
+        item.progress = (0.3 + (currentTime / targetTime) * 0.65).clamp(0.0, 0.99);
+        item.currentStage = "에스프레소 추출 중...";
+        newLog = "💧 ${data['coffeeWaterQuantity']}ml / 🌡️ ${data['boilerTemp']}°C";
+      } else if (powder > 0) {
+        item.progress = ((powder / targetPowder) * 0.3).clamp(0.0, 0.3);
+        item.currentStage = "원두 분쇄 중...";
+        newLog = "🫘 원두 분쇄 중: $powder g";
+      }
+    }
+    else if (progress.code == 0x22) { // 상태 보고
+      final int status = data['status'] ?? 0;
+      item.isExtracting = (status == 1); // 진행 중일 때만 true
+
+      if (status == 3) { // 완료
+        _acceptMachinePackets = false;
+        item.status = OrderStatus.ready;
+        item.progress = 1.0;
+        item.isExtracting = false;
+        newLog = "✅ 제조 완료";
+
+        // 서버 동기화 (기존 로직 유지)
+        _socketService.sendOrderReady(order, item.menuName);
+        if (_manufacturingQueue.isNotEmpty) {
+          _manufacturingQueue.removeAt(0); // 첫 번째 항목 제거
+          _queueNotifier.value++;
+          if (_manufacturingQueue.isNotEmpty) {
+            _availabilityTimer?.cancel();
+            _availabilityTimer = Timer.periodic(const Duration(milliseconds: 1000), (timer) {
+              _checkNextTaskAvailability();
+            });
+            _checkNextTaskAvailability(); // 즉시 1회 실행
+          } else {
+            _isMachineBusy = false;
+          }
+        } else {
+          _isMachineBusy = false; // 더 이상 대기열이 없으면 머신 휴식
+        }
+      } else if (status == 99 || status == 6) { // 에러
+        _acceptMachinePackets = false;
+        item.isError = true;
+        item.isExtracting = false; // 에러 시 게이지 클릭은 가능하게 유지
+        final dynamic errorData = data['errorCode'];
+        item.errorCode = (errorData is List && errorData.isNotEmpty) ? errorData.join(", ") : errorData?.toString();
+        newLog = "❌ 에러 발생: ${item.errorCode}";
+        // 🚀 [추가됨] 에러 발생 시 큐가 멈추지 않도록 에러 난 것을 빼고 다음 작업 실행
+        if (_manufacturingQueue.isNotEmpty) {
+          _manufacturingQueue.removeAt(0);
+          _queueNotifier.value++;
+
+          if (_manufacturingQueue.isNotEmpty) {
+            _availabilityTimer?.cancel();
+            _availabilityTimer = Timer.periodic(const Duration(milliseconds: 1000), (timer) {
+              _checkNextTaskAvailability();
+            });
+            _checkNextTaskAvailability();
+          } else {
+            _isMachineBusy = false;
+          }
+        } else {
+          _isMachineBusy = false;
+        }
+      }
+    }
+
+    // 로그 누적 (다이얼로그 열었을 때 과거 로그가 보이게 함)
+    if (newLog != null && (item.logs.isEmpty || item.logs.first != newLog)) {
+      item.logs.insert(0, newLog);
+    }
   }
 
   Timer? _usbKeepAliveTimer;
@@ -214,6 +368,7 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
     _pageController.dispose();
     _printerService.dispose();
     _machineService.dispose();
+    _availabilityTimer?.cancel();
     super.dispose();
   }
 
@@ -297,7 +452,14 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
             child: OutlinedButton.icon(
-              onPressed: () => _showMachineManagementDialog(context),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const CayeManagementScreen(machineIp: "192.168.10.193"),
+                  ),
+                );
+              },
               label: const Text("머신 관리", style: TextStyle(fontWeight: FontWeight.bold)),
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: Colors.greenAccent, width: 1.5),
@@ -429,50 +591,81 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                 ),
             ],
           ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showQueueDialog(),
+        backgroundColor: _manufacturingQueue.isEmpty ? Colors.blueGrey[800] : Colors.orange[800],
+        icon: Icon(
+            Icons.format_list_numbered,
+            color: _manufacturingQueue.isEmpty ? Colors.white54 : Colors.white
+        ),
+        label: Text(
+          _manufacturingQueue.isEmpty
+              ? "대기열 없음"
+              : "대기열 ${_manufacturingQueue.length}개",
+          style: TextStyle(
+              color: _manufacturingQueue.isEmpty ? Colors.white54 : Colors.white,
+              fontWeight: FontWeight.bold
+          ),
+        ),
+      ),
     );
   }
 
-  void _showMachineManagementDialog(BuildContext context) {
+  void _showQueueDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.grey[900],
-        title: Center(child: const Text("CAYE 머신 원격 관리", style: TextStyle(color: Colors.white))),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildAdminButton("네트워크 연결 확인 (Ping)", Icons.lan, Colors.teal, () async {
-              bool isAlive = await _machineService.checkNetworkOnly("192.168.10.193");
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  backgroundColor: isAlive ? Colors.green : Colors.red,
-                  content: Text(isAlive ? "[Caye] 기기 연결됨 (물리적 성공)" : "[Caye] 기기 연결 실패 (IP/랜선 확인)"),
+      builder: (context) {
+        // 다이얼로그가 떠 있는 동안에도 큐가 변경되면 반영되도록 StatefulBuilder 사용
+        return ValueListenableBuilder<int>(
+            valueListenable: _queueNotifier,
+            builder: (context, value, child){
+              return AlertDialog(
+                backgroundColor: Colors.grey[900],
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                title: const Row(
+                  children: [
+                    Icon(Icons.list_alt, color: Colors.orangeAccent),
+                    SizedBox(width: 10),
+                    Text("제조 대기열", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  ],
                 ),
+                content: SizedBox(
+                  width: 350,
+                  height: 300, // 스크롤 가능하도록 높이 고정
+                  child: _manufacturingQueue.isEmpty
+                      ? const Center(child: Text("대기 중인 제조 명령이 없습니다.", style: TextStyle(color: Colors.white54)))
+                      : ListView.builder(
+                    itemCount: _manufacturingQueue.length,
+                    itemBuilder: (context, index) {
+                      final item = _manufacturingQueue[index];
+                      final bool isExtracting = (index == 0); // 첫 번째 항목은 항상 제조 중
+
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: isExtracting ? Colors.orangeAccent.withOpacity(0.2) : Colors.white10,
+                          child: Text("${index + 1}",
+                              style: TextStyle(color: isExtracting ? Colors.orangeAccent : Colors.white54)),
+                        ),
+                        title: Text(item.subItem.menuName,
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        subtitle: Text("주문 번호: ${item.orderNo}", style: const TextStyle(color: Colors.white54)),
+                        trailing: isExtracting
+                            ? const Text("제조 중...", style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold))
+                            : const Text("대기 중", style: TextStyle(color: Colors.white30)),
+                      );
+                    },
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text("닫기", style: TextStyle(color: Colors.white)),
+                  ),
+                ],
               );
-            }),
-            const SizedBox(height: 20),
-            _buildAdminButton("시간 동기화 (Ping)", Icons.sync, Colors.blue, () {
-              _machineService.sendTimeSyncCommand("192.168.10.193"); // 0x00
-            }),
-            const SizedBox(height: 10),
-            _buildAdminButton("기기 세척 (Cleaning)", Icons.cleaning_services, Colors.orange, () {
-              _machineService.sendCleaningCommand("192.168.10.193"); // 0x01
-            }),
-            const SizedBox(height: 10),
-            _buildAdminButton("기기 헹굼 (Rinsing)", Icons.water_drop, Colors.cyan, () {
-              _machineService.sendRinsingCommand("192.168.10.193"); // 0x10
-            }),
-            const SizedBox(height: 10),
-            _buildAdminButton("현재 상태 조회", Icons.info_outline, Colors.purple, () {
-              _machineService.sendQueryStatus("192.168.10.193"); // 0x31
-            }),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("닫기")),
-        ],
-      ),
+            }
+        );
+      },
     );
   }
 
@@ -489,95 +682,6 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
       ),
     );
   }
-
-  // Widget _buildRemoteController() {
-  //   final List<int> gridMapping = [
-  //     1, 5, 2,
-  //     8, 0, 6,
-  //     4, 7, 3,
-  //   ];
-  //   return Container(
-  //     color: Colors.black,
-  //     padding: const EdgeInsets.all(30),
-  //     child: Column(
-  //       children: [
-  //         const Text("미세 보정 컨트롤", style: TextStyle(color: Colors.orangeAccent, fontSize: 28, fontWeight: FontWeight.bold)),
-  //         const Spacer(),
-  //
-  //         // 1. 원형 숫자 패드 (물리적 배치와 동일)
-  //         SizedBox(
-  //           width: 400,
-  //           child: GridView.builder(
-  //             shrinkWrap: true,
-  //             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-  //                 crossAxisCount: 3, mainAxisSpacing: 20, crossAxisSpacing: 20),
-  //             itemCount: 9,
-  //             itemBuilder: (context, index) {
-  //               int pointIndex = gridMapping[index];
-  //               bool isSelected = _selectedPoint == pointIndex;
-  //               return ElevatedButton(
-  //                 style: ElevatedButton.styleFrom(
-  //                   shape: const CircleBorder(), // 👈 원형으로 변경
-  //                   padding: const EdgeInsets.all(20),
-  //                   backgroundColor: isSelected ? Colors.orangeAccent : Colors.grey[800],
-  //                 ),
-  //                 onPressed: () {
-  //                   setState(() => _selectedPoint = pointIndex);
-  //                   _socketService.sendFineTuneControl("SELECT", value: pointIndex);
-  //                 },
-  //                 child: Text("${pointIndex + 1}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-  //               );
-  //             },
-  //           ),
-  //         ),
-  //
-  //         const Spacer(),
-  //
-  //         // 2. 방향키 (미세 이동)
-  //         Row(
-  //           mainAxisAlignment: MainAxisAlignment.center,
-  //           children: [
-  //             _dirBtn(Icons.arrow_back, -1, 0),
-  //             Column(
-  //               children: [
-  //                 _dirBtn(Icons.arrow_upward, 0, -1),
-  //                 const SizedBox(height: 60), // 상하 버튼 간격
-  //                 _dirBtn(Icons.arrow_downward, 0, 1),
-  //               ],
-  //             ),
-  //             _dirBtn(Icons.arrow_forward, 1, 0),
-  //           ],
-  //         ),
-  //
-  //         const Spacer(),
-  //
-  //         ElevatedButton(
-  //           style: ElevatedButton.styleFrom(
-  //             backgroundColor: Colors.green[700],
-  //             minimumSize: const Size(double.infinity, 80),
-  //             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-  //           ),
-  //           onPressed: () {
-  //             _socketService.sendFineTuneControl("COMPLETE");
-  //           },
-  //           child: const Text("미세 조정 완료", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-  //         ),
-  //       ],
-  //     ),
-  //   );
-  // }
-
-  // Widget _dirBtn(IconData icon, double dx, double dy) {
-  //   return GestureDetector(
-  //     onTap: () => _socketService.sendFineTuneControl("MOVE", value: {"dx": dx, "dy": dy}),
-  //     child: Container(
-  //       width: 70, height: 70,
-  //       margin: const EdgeInsets.all(5),
-  //       decoration: const BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
-  //       child: Icon(icon, color: Colors.white, size: 35),
-  //     ),
-  //   );
-  // }
 
   void _showCalibrationConfirmDialog(BuildContext context) {
     showDialog(
@@ -683,78 +787,69 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                 bool isSubReady = subItem.status == OrderStatus.ready;
 
                 return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4.0),
-                  child: Row(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: Column( // Row에서 Column으로 변경 (이름 아래에 게이지)
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Text(
-                          subItem.menuName,
-                          style: TextStyle(
-                            color: isSubReady ? Colors.white38 : Colors.white,
-                            fontSize: 16,
-                            decoration: isSubReady ? TextDecoration.lineThrough : null, // 완료 시 취소선
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(subItem.menuName,
+                                style: TextStyle(
+                                    color: isSubReady ? Colors.white38 : Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500)),
                           ),
-                        ),
+                          // 완료 아이콘 표시
+                          if (isSubReady)
+                            const Icon(Icons.check_circle, color: Colors.greenAccent, size: 24)
+                          else if (!subItem.isExtracting && !subItem.isError)
+                            IconButton(
+                              constraints: const BoxConstraints(),
+                              padding: EdgeInsets.zero,
+                              icon: const Icon(Icons.play_circle_fill, color: Colors.orangeAccent, size: 30),
+                              onPressed: () => _startManufacturing(order, subItem, index),
+                            ),
+                        ],
                       ),
 
-                      IconButton(
-                        icon: const Icon(Icons.play_circle_fill, color: Colors.orangeAccent, size: 28),
-                        tooltip: "머신 추출 테스트",
-                        onPressed: () {
-                          String? pKey;
-
-                          // 💡 레시피 매핑 (머신에 1, 2번으로 등록했다고 가정)
-                          if (subItem.menuName.contains("아메리카노")) {
-                            pKey = "1";
-                          } else if (subItem.menuName.contains("라떼")) {
-                            pKey = "2";
-                          }
-
-                          if (pKey != null) {
-                            // 레시피가 있는 경우 -> 제조 명령 전송
-                            _machineService.sendMakeCommand(
-                                "192.168.10.193",
-                                pKey,
-                                "${order.orderNo}.${(index + 1).toString().padLeft(2, '0')}"
-                            );
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text("🚀 ${subItem.menuName} 추출 시작!")),
-                            );
-                          } else {
-                            // 레시피가 없는 경우 -> 경고 표시 (동작 안 함)
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                backgroundColor: Colors.redAccent,
-                                content: Text("⚠️ 해당 메뉴는 머신 레시피가 등록되지 않았습니다."),
-                              ),
-                            );
-                          }
-                        },
-                      ),
-
-                      const SizedBox(width: 8),
-                      // 개별 제조완료 버튼
-                      SizedBox(
-                        width: 70,
-                        height: 35,
-                        child: ElevatedButton(
-                          onPressed: isSubReady ? null : () {
-                            setState(() {
-                              subItem.status = OrderStatus.ready;
-                            });
-                            // 필요 시 소켓으로 부분 완료 신호 전송
-                            _socketService.sendOrderReady(
-                                order,
-                                subItem.menuName
+                      // 🚀 [수정 사항 1] 진행 중일 때 일자형(Linear) 게이지바 표시
+                      if (subItem.isExtracting || subItem.isError)
+                        GestureDetector(
+                          onTap: () {
+                            showExtractionMonitor(
+                              context, _machineService, subItem.menuName,
+                              machineIp: "192.168.10.193",
+                              productKey: (subItem.menuName.contains("아메리카노") ? "1" : "2"),
+                              orderNo: order.orderNo,
+                              subItem: subItem,
                             );
                           },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green[700],
-                            padding: EdgeInsets.zero,
+                          child: Container(
+                            margin: const EdgeInsets.only(top: 8),
+                            child: Column(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: LinearProgressIndicator(
+                                    value: subItem.progress,
+                                    minHeight: 10, // 게이지 두께
+                                    backgroundColor: Colors.white10,
+                                    color: subItem.isError ? Colors.redAccent : Colors.orangeAccent,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(subItem.currentStage, style: TextStyle(fontSize: 10, color: subItem.isError ? Colors.redAccent : Colors.orangeAccent)),
+                                    Text("${(subItem.progress * 100).toInt()}%", style: const TextStyle(fontSize: 10, color: Colors.white70)),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
-                          child: Text(isSubReady ? "제조완료" : "제조중", style: const TextStyle(fontSize: 12)),
                         ),
-                      ),
                     ],
                   ),
                 );
@@ -781,4 +876,123 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
       ),
     );
   }
+
+  void _startManufacturing(OrderItem order, SubItem subItem, int index) {
+    const String machineIp = "192.168.10.193";
+    String? pKey;
+    if (subItem.menuName.contains("아메리카노")) pKey = "1";
+    else if (subItem.menuName.contains("라떼")) pKey = "2";
+
+    if (pKey != null) {
+      String combinedOrderNo = "${order.orderNo}.${(index + 1).toString().padLeft(2, '0')}";
+
+      // 1. 큐 아이템 생성
+      final newItem = ManufacturingQueueItem(
+        machineIp: machineIp,
+        productKey: pKey,
+        orderNo: combinedOrderNo,
+        subItem: subItem,
+        order: order,
+      );
+
+      setState(() {
+        // 2. 큐에 추가
+        _manufacturingQueue.add(newItem);
+        subItem.logs = ["⏳ 제조 대기열에 추가됨..."];
+        subItem.currentStage = "대기 중";
+        subItem.isExtracting = true;
+        _queueNotifier.value++;
+      });
+
+      // 3. 머신이 쉬고 있다면 바로 첫 번째 작업 시작
+      if (!_isMachineBusy) {
+        _processNextInQueue();
+      }
+    }
+  }
+
+  List<ManufacturingQueueItem> _manufacturingQueue = [];
+  bool _isMachineBusy = false; // 현재 머신이 제조 중인지 여부
+  bool _acceptMachinePackets = false;
+
+  final ValueNotifier<int> _queueNotifier = ValueNotifier<int>(0);
+  Timer? _availabilityTimer;
+// 🚀 큐의 첫 번째 항목을 실제로 머신에 전송하는 함수
+  void _processNextInQueue() {
+    if (_manufacturingQueue.isEmpty) {
+      _isMachineBusy = false;
+      return;
+    }
+
+    _isMachineBusy = true;
+    final nextTask = _manufacturingQueue.first;
+
+    setState(() {
+      _acceptMachinePackets = false;
+      nextTask.subItem.isExtracting = true; // 게이지 바 활성화
+      nextTask.subItem.logs.insert(0, "🚀 제조 명령 전송됨 (${nextTask.orderNo})");
+    });
+
+    // 머신에 실제 명령 전송
+    _machineService.sendMakeCommand(nextTask.machineIp, nextTask.productKey, nextTask.orderNo);
+  }
+
+  void _checkNextTaskAvailability() {
+    if (_manufacturingQueue.isEmpty) {
+      _availabilityTimer?.cancel();
+      _isMachineBusy = false;
+      return;
+    }
+
+    final nextTask = _manufacturingQueue.first;
+
+    // UI에 '확인 중' 표시
+    setState(() {
+      nextTask.subItem.isExtracting = true;
+      nextTask.subItem.currentStage = "기기 준비 상태 확인 중...";
+    });
+
+    // 0x23 발사!
+    _machineService.sendCheckAvailability(nextTask.machineIp, nextTask.productKey);
+  }
+//   void _processNextInQueue() {
+//     if (_manufacturingQueue.isEmpty) {
+//       _isMachineBusy = false;
+//       return;
+//     }
+//
+//     _isMachineBusy = true;
+//     final nextTask = _manufacturingQueue.first;
+//
+//     setState(() {
+//       nextTask.subItem.isExtracting = true;
+//       nextTask.subItem.currentStage = "가상 제조 테스트 중...";
+//       nextTask.subItem.logs.insert(0, "🚀 (테스트) 가상 명령 시작 (${nextTask.orderNo})");
+//     });
+//
+//     // 🛑 1. 실제 머신 전송 코드는 잠시 주석 처리! (커피 안 나옴)
+//     // _machineService.sendMakeCommand(nextTask.machineIp, nextTask.productKey, nextTask.orderNo);
+//
+//     // 🧪 2. 가짜 타이머 (5초 뒤에 0x22 완료 신호가 온 것처럼 앱을 속임)
+//     Future.delayed(const Duration(seconds: 26), () {
+//       if (!mounted) return;
+//
+//       setState(() {
+//         // 완료 상태로 강제 변경
+//         nextTask.subItem.progress = 1.0;
+//         nextTask.subItem.status = OrderStatus.ready;
+//         nextTask.subItem.isExtracting = false;
+//         nextTask.subItem.logs.insert(0, "✅ (테스트) 가상 제조 완료");
+//
+//         // 다음 대기열 실행 (0x22 수신했을 때와 동일한 로직)
+//         if (_manufacturingQueue.isNotEmpty) {
+//           _manufacturingQueue.removeAt(0);
+//           _queueNotifier.value++;
+//           _processNextInQueue();
+//         } else {
+//           _isMachineBusy = false;
+//         }
+//       });
+//     });
+//   }
 }

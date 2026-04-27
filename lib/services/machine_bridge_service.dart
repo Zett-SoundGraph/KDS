@@ -5,6 +5,12 @@ import 'dart:typed_data';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:flutter/cupertino.dart';
 
+class ExtractionProgress {
+  final int code;
+  final Map<String, dynamic> data;
+  ExtractionProgress(this.code, this.data);
+}
+
 class MachineBridgeService {
   Socket? _socket;
   Timer? _heartbeatTimer;
@@ -66,6 +72,27 @@ class MachineBridgeService {
     return encrypter.encryptBytes(combinedData, iv: iv).bytes;
   }
 
+  String? _decryptPayload(Uint8List encryptedData) {
+    try {
+      final key = enc.Key.fromBase16(_hexKey);
+      final iv = enc.IV(Uint8List(16)); // 고정 Zero IV
+      final encrypter = enc.Encrypter(enc.AES(key, mode: enc.AESMode.cbc, padding: 'PKCS7'));
+
+      // 1. 복호화 실행
+      final decryptedBytes = encrypter.decryptBytes(enc.Encrypted(encryptedData), iv: iv);
+
+      // 2. 앞의 8바이트(타임스탬프) 제거 후 나머지 JSON 파싱
+      // 머신의 응답도 [8바이트 TS] + [JSON] 구조입니다.
+      if (decryptedBytes.length <= 8) return null;
+
+      final jsonBytes = decryptedBytes.sublist(8);
+      return utf8.decode(jsonBytes);
+    } catch (e) {
+      _log("❌ 복호화 실패: $e");
+      return null;
+    }
+  }
+
   // 2. 체크섬 계산 (규격: 암호화된 Data Content 영역만 XOR)
   int _getChecksum(Uint8List encryptedData) {
     int cs = 0;
@@ -121,18 +148,45 @@ class MachineBridgeService {
 // 0x00: 하트비트/시간동기화 (규격상 body 없이 TS만 암호화해서 보냄)
   Future<void> sendTimeSyncCommand(String ip) async => await _sendPacket(ip, 0x00, {});
 
+
+  // Future<void> sendTimeSyncCommand(String ip) async {
+  //   // 테스트하고 싶은 레시피 번호를 적으세요.
+  //   String testProductKey = "1";
+  //
+  //   _log("🧪 [Test] 0x23(제조가능조회) 테스트 시작...");
+  //   await _sendPacket(ip, 0x32, {"productKey": testProductKey});
+  //
+  //   // 0x32도 바로 확인해보고 싶다면 아래 주석을 해제하세요.
+  //   // 너무 빨리 보내면 패킷이 꼬일 수 있으니 1초 정도 간격을 둡니다.
+  //   /*
+  //   await Future.delayed(const Duration(seconds: 1));
+  //   _log("🧪 [Test] 0x32(제조가능조회 - 부록버전) 테스트 시작...");
+  //   await _sendPacket(ip, 0x32, {"productKey": testProductKey});
+  //   */
+  //
+  //   _log("💡 0x23과 0x32의 응답 로그([Decrypted])를 비교해 보세요.");
+  // }
+
   // 0x20: 음료 제조
   Future<void> sendMakeCommand(String ip, String productKey, String orderNo) async {
     await _sendPacket(ip, 0x20, {
       "func": 1, // 제조 기능을 의미하는 고정값
       "params": {
-        "productKey": productKey.toString(),
         "orderNo": orderNo.toString(),
+        "productKey": productKey.toString(),
       }
     });
   }
 
-  Future<void> sendCleaningCommand(String ip) async => await _sendPacket(ip, 0x01, {"mode": 0});
+  Future<void> sendCheckAvailability(String ip, String productKey) async {
+    await _sendPacket(ip, 0x23, {
+      "productKey": productKey
+    });
+  }
+
+  Future<void> sendCleaningCommand(String ip, {int mode = 0}) async {
+    await _sendPacket(ip, 0x01, {"mode": mode});
+  }
   Future<void> sendRinsingCommand(String ip) async => await _sendPacket(ip, 0x10, {});
   Future<void> sendQueryStatus(String ip) async => await _sendPacket(ip, 0x31, {});
 
@@ -143,11 +197,45 @@ class MachineBridgeService {
     });
   }
 
+  final StreamController<ExtractionProgress> _extractionStreamController =
+  StreamController<ExtractionProgress>.broadcast();
+  Stream<ExtractionProgress> get extractionStream => _extractionStreamController.stream;
+
   // 6. 머신에서 오는 데이터 처리 (0x24 실시간 리포트 등)
   void _handleIncomingData(Uint8List data) {
-    // 수신 데이터를 16진수로 출력하여 분석 용이하게 함
-    String hexResponse = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-    _log("📥 [Received] $hexResponse");
+    if (data.length < 13) return; // 헤더(2) + 코드(1) + 카운트(1) + 인덱스(1) + 길이(2) + 체크섬(1) + 트레일러(2) = 최소 10~11바이트 이상
+
+    // 헤더 CC AA 확인 및 데이터 길이 추출
+    int functionCode = data[2];
+    int dataLength = ByteData.sublistView(data, 5, 7).getUint16(0, Endian.big);
+
+    // 암호화된 본문(Data Content) 추출
+    Uint8List encryptedBody = data.sublist(7, 7 + dataLength);
+
+    // 복호화 시도
+    String? jsonResponse = _decryptPayload(encryptedBody);
+
+    if (jsonResponse != null) {
+      final decoded = jsonDecode(jsonResponse);
+      if (functionCode == 0x24 || functionCode == 0x22 || functionCode == 0x20 || functionCode == 0x23) {
+        _extractionStreamController.add(ExtractionProgress(functionCode, decoded));
+      }
+      _log("📥 [Decrypted] Code: 0x${functionCode.toRadixString(16)} | Data: $jsonResponse");
+
+      // 💡 여기서 전역 상태 관리자나 알림을 통해 UI에 데이터 전달
+      // 예: _statusStreamController.add({'code': functionCode, 'data': jsonDecode(jsonResponse)});
+    }
+  }
+
+  // 🚀 [추가] 제조 취소 명령 (0x20, func: 0)
+  Future<void> sendCancelCommand(String ip, String productKey, String orderNo) async {
+    await _sendPacket(ip, 0x20, {
+      "func": 0, // 취소
+      "params": {
+        "productKey": productKey,
+        "orderNo": orderNo,
+      }
+    });
   }
 
   void _handleDisconnect() {
