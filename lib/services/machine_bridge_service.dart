@@ -21,7 +21,18 @@ class MachineBridgeService {
   static const String _hexKey = "734B09645723794F14B817BB6218D14E";
 
   void _log(String message) {
-    debugPrint("[Caye] $message"); // 모든 로그에 [Caye]를 붙입니다.
+    // 긴 로그를 800자씩 끊어서 전체 출력하는 로직
+    if (message.length > 800) {
+      int start = 0;
+      while (start < message.length) {
+        int end = start + 800;
+        if (end > message.length) end = message.length;
+        debugPrint("[Caye] ${message.substring(start, end)}");
+        start = end;
+      }
+    } else {
+      debugPrint("[Caye] $message");
+    }
   }
 
   // --- [여기에 추가 2: 단순 네트워크 확인 함수] ---
@@ -190,6 +201,22 @@ class MachineBridgeService {
   Future<void> sendRinsingCommand(String ip) async => await _sendPacket(ip, 0x10, {});
   Future<void> sendQueryStatus(String ip) async => await _sendPacket(ip, 0x31, {});
 
+  Future<void> sendTodayExtractionHistory(String ip) async {
+    DateTime now = DateTime.now();
+    // 오늘 자정 (00:00:00) 구하기
+    DateTime startOfToday = DateTime(now.year, now.month, now.day);
+
+    int startTs = startOfToday.millisecondsSinceEpoch; // 밀리초 단위 Unix Timestamp
+    int endTs = now.millisecondsSinceEpoch;
+
+    await _sendPacket(ip, 0x35, {
+      "startTs": startTs,
+      "endTs": endTs,
+    });
+
+    _log("📡 [Test] 0x35 오늘 추출 기록 조회 요청 (Start: $startTs, End: $endTs)");
+  }
+
   void _startHeartbeat(String ip) {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
@@ -217,7 +244,7 @@ class MachineBridgeService {
 
     if (jsonResponse != null) {
       final decoded = jsonDecode(jsonResponse);
-      if (functionCode == 0x24 || functionCode == 0x22 || functionCode == 0x20 || functionCode == 0x23) {
+      if (functionCode == 0x24 || functionCode == 0x22 || functionCode == 0x20 || functionCode == 0x23 || functionCode == 0x35) {
         _extractionStreamController.add(ExtractionProgress(functionCode, decoded));
       }
       _log("📥 [Decrypted] Code: 0x${functionCode.toRadixString(16)} | Data: $jsonResponse");

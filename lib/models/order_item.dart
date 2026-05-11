@@ -10,13 +10,13 @@ class SubItem {
   bool isExtracting = false;
   bool isError = false;
   String? errorCode;
-  String currentStage = "대기 중";
+  String currentStage = "Pending";
 
   SubItem({
     required this.menuName,
     this.status = OrderStatus.pending,
   }) {
-    logs = ["🚀 제조 대기 중..."];
+    logs = ["🚀 Pending..."];
   }
 }
 

@@ -10,6 +10,7 @@ import android.os.Looper
 import com.bixolon.commonlib.connectivity.NetworkService // 라이브러리 임포트
 import java.lang.Exception
 import android.util.Log
+import android.view.KeyEvent
 
 class MainActivity: FlutterActivity() {
     companion object {
@@ -25,6 +26,10 @@ class MainActivity: FlutterActivity() {
     }
     private val SENSOR_CHANNEL = "com.sg.kds/printer_status"
     private val ACTION_CHANNEL = "com.sg.kds/printer_action"
+    private val SCANNER_CHANNEL = "com.sg.kds/scanner"
+    private var scannerChannel: MethodChannel? = null
+    private var barcodeBuffer = StringBuilder()
+    private var lastKeyTime: Long = 0
     private var statusSink: EventChannel.EventSink? = null
     private val handler = Handler(Looper.getMainLooper())
 
@@ -37,6 +42,8 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         Log.d("KDS_DEBUG", "🚀 채널 설정 완료!")
+
+        scannerChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SCANNER_CHANNEL)
 
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, SENSOR_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
@@ -100,6 +107,47 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+    private val clearBufferRunnable = Runnable {
+        if (barcodeBuffer.isNotEmpty()) {
+            Log.w("KDS_DEBUG", "⚠️ 1.5초간 입력이 없어 버퍼 초기화됨 (버려진 데이터: $barcodeBuffer)")
+            barcodeBuffer.clear()
+        }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+
+            // 🚀 1. 키가 하나라도 들어오면, 예약되어 있던 '버퍼 지우기' 타이머를 즉시 취소합니다.
+            handler.removeCallbacks(clearBufferRunnable)
+
+            val keyCode = event.keyCode
+            // 엔터키(스캔 완료) 처리
+            if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                if (barcodeBuffer.isNotEmpty()) {
+                    val finalBarcode = barcodeBuffer.toString().trim()
+                    barcodeBuffer.clear()
+                    Log.d("KDS_DEBUG", "🎯 [Native Scanner] 스캔 완료: $finalBarcode")
+
+                    handler.post {
+                        scannerChannel?.invokeMethod("onScan", finalBarcode)
+                    }
+                }
+                return true
+            } else {
+                val unicodeChar = event.unicodeChar
+                if (unicodeChar >= 32) {
+                    barcodeBuffer.append(unicodeChar.toChar())
+                }
+
+                // 🚀 2. 글자를 버퍼에 넣은 후, "1.5초(1500ms) 동안 아무 입력이 없으면 버퍼를 비워라"고 새로 타이머를 맞춥니다.
+                handler.postDelayed(clearBufferRunnable, 1500)
+
+                if (unicodeChar > 0) return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     private fun sendImagePrint(imageBytes: ByteArray): Boolean {
         if (networkService == null || !isMonitoring) return false
 
@@ -113,13 +161,13 @@ class MainActivity: FlutterActivity() {
                 // 2. 인쇄 영역 너비 설정 (384 dots)
                 combined.addAll(byteArrayOf(0x1D, 0x57, 0x80.toByte(), 0x01.toByte()).toList())
 
-                // 3. 중앙 정렬 (이미지 내부 정렬)
-                combined.addAll(byteArrayOf(0x1B, 0x61, 0x01).toList())
+                // 🚀 3. 왼쪽 정렬 (이미지 내부 정렬)
+                // 기존 0x01(중앙) -> 0x00(왼쪽)으로 변경하여 딱 붙게 만듭니다.
+                combined.addAll(byteArrayOf(0x1B, 0x61, 0x00).toList())
 
-                // 🚀 4. 왼쪽 마진 설정 (GS L) - 물리적 위치 이동
-                // 58mm 종이 폭에서 384도트 블록을 중앙으로 밀기 위한 값입니다.
-                // 40을 기준으로 32, 36, 44 등 4단위로 바꿔가며 종이 끝과의 간격을 맞춰보세요.
-                val offsetDots = 40
+                // 🚀 4. 왼쪽 마진 설정 (GS L) - 여백 제거
+                // 기존 40이었던 offsetDots를 0으로 변경하여 물리적 여백을 없앱니다.
+                val offsetDots = 0
                 val nL = (offsetDots % 256).toByte()
                 val nH = (offsetDots / 256).toByte()
                 combined.addAll(byteArrayOf(0x1D, 0x4C, nL, nH).toList())
@@ -128,8 +176,13 @@ class MainActivity: FlutterActivity() {
                 combined.addAll(imageBytes.toList())
 
                 // 6. 피딩 및 커팅
-                combined.addAll(byteArrayOf(0x1B, 0x64, 0x02).toList())
-                combined.addAll(byteArrayOf(0x1D, 0x56, 0x42, 0x00).toList())
+//                combined.addAll(byteArrayOf(0x1B, 0x64, 0x01).toList())
+//                combined.addAll(byteArrayOf(0x1D, 0x56, 0x42, 0x00).toList())
+                val feedLines: Byte = 0x04 // 👈 이 숫자로 하단 여백을 mm 단위로 미세 조절합니다.
+                combined.addAll(byteArrayOf(0x1B, 0x64, feedLines).toList())
+
+                // 🎯 변경 2: 종이를 더 빼지 말고 그 자리에서 즉시 커팅 (0x01)
+                combined.addAll(byteArrayOf(0x1D, 0x56, 0x01).toList())
 
                 networkService?.write(combined.toByteArray())
             }.start()
