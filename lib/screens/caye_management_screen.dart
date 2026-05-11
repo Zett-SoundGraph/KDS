@@ -4,7 +4,13 @@ import '../services/machine_bridge_service.dart';
 
 class CayeManagementScreen extends StatefulWidget {
   final String machineIp;
-  const CayeManagementScreen({super.key, required this.machineIp});
+  final String? activeProductKey;
+  final String? activeOrderNo;
+  const CayeManagementScreen({
+    super.key,
+    required this.machineIp,
+    this.activeProductKey,
+    this.activeOrderNo,});
 
   @override
   State<CayeManagementScreen> createState() => _CayeManagementScreenState();
@@ -15,7 +21,7 @@ class _CayeManagementScreenState extends State<CayeManagementScreen> {
 
   // 가상의 진행 상태 (나중에 머신 데이터와 연동)
   double _progress = 0.0;
-  String _currentStatus = "연결됨 - 대기 중";
+  String _currentStatus = "Connected - Standby";
 
   @override
   Widget build(BuildContext context) {
@@ -50,29 +56,37 @@ class _CayeManagementScreenState extends State<CayeManagementScreen> {
                 mainAxisSpacing: 15,
                 crossAxisSpacing: 15,
                 children: [
-                  _controlBtn("기기 헹굼", Icons.water_drop, Colors.cyan,
+                  _controlBtn("Rinse", Icons.water_drop, Colors.cyan,
                           () => _service.sendRinsingCommand(widget.machineIp)),
-                  _controlBtn("기기 세척", Icons.cleaning_services, Colors.orange,
+                  _controlBtn("Clean", Icons.cleaning_services, Colors.orange,
                           () => _showCleaningDialog(context)),
-                  _controlBtn("상태 조회", Icons.manage_search, Colors.purple,
+                  _controlBtn("Status", Icons.manage_search, Colors.purple,
                           () => _service.sendQueryStatus(widget.machineIp)),
-                  _controlBtn("시간 동기화", Icons.sync, Colors.teal,
+                  _controlBtn("Sync Time", Icons.sync, Colors.teal,
                           () => _service.sendTimeSyncCommand(widget.machineIp)),
+                  _controlBtn("Today's Data (0x35)", Icons.insert_chart_outlined, Colors.pinkAccent,
+                          () {
+                        _service.sendTodayExtractionHistory(widget.machineIp);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("📡 오늘치 기록을 요청했습니다. Logcat을 확인하세요!")),
+                        );
+                      }),
                 ],
               ),
             ),
 
             // 4. 하단 긴급 중지 버튼
-            if (_progress > 0)
+            if (widget.activeProductKey != null && widget.activeOrderNo != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 20),
                 child: ElevatedButton.icon(
                   onPressed: () {
-                    // 🚀 취소 로직 (현재 수행 중인 레시피 정보 필요)
-                    _service.sendCancelCommand(widget.machineIp, "1", "CANCEL_REQ");
+                    // 🚀 실제 진행 중인 레시피 정보가 있으면 그 값으로 취소!
+                    _service.sendCancelCommand(widget.machineIp, widget.activeProductKey!, widget.activeOrderNo!);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Emergency Stop command sent!")));
                   },
                   icon: const Icon(Icons.stop_circle, size: 30),
-                  label: const Text("작업 즉시 취소", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  label: const Text("Emergency Stop", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.red,
                       minimumSize: const Size(double.infinity, 70),
@@ -92,22 +106,22 @@ class _CayeManagementScreenState extends State<CayeManagementScreen> {
       builder: (context) => AlertDialog(
         backgroundColor: Colors.grey[900],
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        title: const Text("세척 모드 선택",
+        title: const Text("Select Cleaning Mode",
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildModalTile("마감 세척 (전체)", "기기의 모든 시스템을 세척합니다.", 0),
+            _buildModalTile("End of Day Cleaning (All)", "Cleans all internal systems.", 0),
             const Divider(color: Colors.white10),
-            _buildModalTile("커피 시스템 세척", "커피 추출 라인을 집중 세척합니다.", 1),
+            _buildModalTile("Coffee System Cleaning", "Cleans the coffee extraction lines.", 1),
             const Divider(color: Colors.white10),
-            _buildModalTile("우유 시스템 세척", "우유 노즐 및 관로를 세척합니다.", 2),
+            _buildModalTile("Milk System Cleaning", "Cleans milk nozzles and pipes.", 2),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text("취소", style: TextStyle(color: Colors.white54)),
+            child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
           ),
         ],
       ),
@@ -125,7 +139,7 @@ class _CayeManagementScreenState extends State<CayeManagementScreen> {
         Navigator.pop(context); // 팝업 닫기
 
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("🚀 $title 시작!")),
+          SnackBar(content: Text("🚀 Starting $title!")),
         );
       },
     );
@@ -161,7 +175,7 @@ class _CayeManagementScreenState extends State<CayeManagementScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text("작업 진행률", style: TextStyle(color: Colors.white)),
+            const Text("Progress", style: TextStyle(color: Colors.white)),
             Text("${(_progress * 100).toInt()}%", style: const TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
           ],
         ),

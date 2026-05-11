@@ -65,57 +65,6 @@ class PrinterService {
     }
   }
 
-  // Future<void> printImageLabel(Widget widgetToPrint) async {
-  //   try {
-  //     final stopWatch = Stopwatch()..start();
-  //     log("⏱️ [이미지] 프로세스 시작");
-  //
-  //     // 📷 단계 1: 위젯을 이미지(Uint8List)로 캡처
-  //     Uint8List? capturedImage = await _screenshotController.captureFromWidget(
-  //       Container(
-  //         width: 384, // 🚀 SRP-S200의 표준 가로 도트 수 (58mm = 384 dots)
-  //         color: Colors.white,
-  //         child: widgetToPrint,
-  //       ),
-  //       pixelRatio: 1.0, // 🚀 1픽셀을 1도트로 1:1 매칭 (배율 확대 방지)
-  //       delay: const Duration(milliseconds: 100),
-  //     );
-  //
-  //     if (capturedImage == null) return;
-  //     log("📷 1. 캡처 완료");
-  //
-  //     // 🎨 단계 2: 이미지를 프린터용 비트맵 데이터로 변환
-  //     final img.Image? decodedImage = img.decodeImage(capturedImage);
-  //     if (decodedImage == null) return;
-  //     log("🎨 2. 디코딩 완료");
-  //
-  //     // 58mm 프린터(SRP-S200) 설정
-  //     _cachedProfile ??= await CapabilityProfile.load();
-  //
-  //     log("🎨 3단계: 변환 시작");
-  //
-  //     final generator = Generator(PaperSize.mm58, _cachedProfile!);
-  //     List<int> bytes = [];
-  //
-  //     bytes += generator.reset();
-  //
-  //     log("🎨 3단계: 래스터 변환 시작 (가벼운 모드)");
-  //
-  //     // 이미지 데이터를 점(Pixel) 데이터로 변환 (가장 무거운 작업)
-  //     bytes += generator.image(decodedImage, align: PosAlign.center);
-  //
-  //     log("🎨 4단계: 변환 완료! 데이터 크기: ${bytes.length} bytes");
-  //
-  //     await _actionChannel.invokeMethod('printImageLabel', Uint8List.fromList(bytes));
-  //
-  //     log("🏁 모든 과정 완료: ${stopWatch.elapsedMilliseconds}ms");
-  //     stopWatch.stop();
-  //
-  //   } catch (e) {
-  //     log("❌ 에러 발생: $e");
-  //   }
-  // }
-
   Future<void> printImageLabel(Widget widgetToPrint) async {
     final totalWatch = Stopwatch()..start();
 

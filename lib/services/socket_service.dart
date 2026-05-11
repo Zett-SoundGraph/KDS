@@ -73,7 +73,7 @@ class KdsSocketService {
     }
   }
 
-  void sendOrderReady(OrderItem order, String menuName) {
+  void sendOrderReady(OrderItem order, String menuName, int totalOrderCount) {
     if (_socket != null && _socket!.readyState == WebSocket.open) {
       Map<String, dynamic> data = {
         "type": "ORDER_READY",
@@ -82,7 +82,9 @@ class KdsSocketService {
         "drinkCount": order.drinkCount,
         "foodCount": order.foodCount,
         "bottleCount": order.bottleCount,
-        "nickname": order.nickname ?? "",
+        // "nickname": order.nickname ?? "",
+        "nickname": "",
+        "totalRequired": totalOrderCount,
         "timestamp": DateTime.now().toIso8601String(),
       };
       _socket!.add(jsonEncode(data));

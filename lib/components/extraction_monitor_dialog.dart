@@ -12,6 +12,7 @@ void showExtractionMonitor(
       required String orderNo,
       required SubItem subItem, // 🚀 현재 진행 상태를 가진 subItem 필수 전달
       Function? onComplete,
+      Function? onCancel,
     }) {
   showDialog(
     context: context,
@@ -24,6 +25,7 @@ void showExtractionMonitor(
       orderNo: orderNo,
       subItem: subItem, // 🚀 전달
       onComplete: onComplete,
+      onCancel: onCancel,
     ),
   );
 }
@@ -36,6 +38,7 @@ class _ExtractionMonitorContent extends StatefulWidget {
   final String orderNo;
   final SubItem subItem; // 🚀 추가
   final Function? onComplete;
+  final Function? onCancel;
 
   const _ExtractionMonitorContent({
     required this.service,
@@ -45,6 +48,7 @@ class _ExtractionMonitorContent extends StatefulWidget {
     required this.orderNo,
     required this.subItem, // 🚀 추가
     this.onComplete,
+    this.onCancel,
   });
 
   @override
@@ -147,7 +151,7 @@ class _ExtractionMonitorContentState extends State<_ExtractionMonitorContent> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        "오류 원인: $_errorCode\n(점검 후 다시 시도해주세요)",
+                        "Error Code: $_errorCode\n(Please check and try again)",
                         style: const TextStyle(color: Colors.redAccent, fontSize: 13, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -180,7 +184,7 @@ class _ExtractionMonitorContentState extends State<_ExtractionMonitorContent> {
                       side: const BorderSide(color: Colors.redAccent),
                       padding: const EdgeInsets.symmetric(vertical: 15),
                     ),
-                    child: const Text("제조 중단", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                    child: const Text("Stop Brewing", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
                   ),
                 ),
               ),
@@ -195,7 +199,7 @@ class _ExtractionMonitorContentState extends State<_ExtractionMonitorContent> {
                   padding: const EdgeInsets.symmetric(vertical: 15),
                 ),
                 child: Text(
-                    (_isFinished || _isCancelled || _isError) ? "확인" : "창 닫기 (추출계속)",
+                    (_isFinished || _isCancelled || _isError) ? "OK" : "Close (Continue)",
                     style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
               ),
             ),
@@ -207,10 +211,23 @@ class _ExtractionMonitorContentState extends State<_ExtractionMonitorContent> {
 
   void _requestCancel() {
     widget.service.sendCancelCommand(widget.machineIp, widget.productKey, widget.orderNo);
+
     setState(() {
-      _logs.insert(0, "🛑 사용자 요청으로 취소 명령 전송됨...");
-      _currentStage = "취소 명령 전송 중";
+      _isCancelled = true; // 스트림 업데이트 중단
+      _logs.insert(0, "🛑 Cancelled by user");
+      _currentStage = "Cancellation Complete";
+
+      // 🚀 [추가 5] 즉시 진행률을 0으로 초기화하고 제조 상태를 해제함
+      widget.subItem.progress = 0.0;
+      widget.subItem.isExtracting = false;
+      widget.subItem.isError = false;
+      widget.subItem.status = OrderStatus.pending;
     });
+
+    // 🚀 [추가 6] 메인 화면에 "취소됐으니 큐에서 빼라"고 알림
+    if (widget.onCancel != null) {
+      widget.onCancel!();
+    }
   }
 
   // 🚀 _updateState 로직은 이전과 동일하지만, 이제 다이얼로그 전용 로컬 변수를 업데이트합니다.
@@ -235,8 +252,15 @@ class _ExtractionMonitorContentState extends State<_ExtractionMonitorContent> {
           newLog = "💧 ${data['coffeeWaterQuantity']}ml / 🌡️ ${data['boilerTemp']}°C / ⚖️ ${data['coffeeWeight']}g";
         } else if (powder > 0) {
           _progress = ((powder / targetPowder) * 0.3).clamp(0.0, 0.3);
-          _currentStage = "원두 분쇄 중...";
-          newLog = "🫘 원두 분쇄 중: $powder / $targetPowder g";
+          _currentStage = "Grinding Beans...";
+          newLog = "🫘 Grinding beans: $powder / $targetPowder g";
+        } else {
+          // 🚀 [추가] 다이얼로그에도 물 투출 단계 추가
+          _progress = 0.05;
+          _currentStage = "Dispensing Water...";
+          widget.subItem.progress = _progress;
+          widget.subItem.currentStage = _currentStage;
+          newLog = "💧 Dispensing Water / Preparing...";
         }
       }
       else if (progress.code == 0x22) {
@@ -246,12 +270,12 @@ class _ExtractionMonitorContentState extends State<_ExtractionMonitorContent> {
             if (!_isFinished) {
               _isFinished = true;
               _progress = 1.0;
-              _currentStage = "✅ 제조 완료";
+              _currentStage = "✅ Brewing Complete";
               widget.subItem.progress = 1.0;
               widget.subItem.status = OrderStatus.ready;
               widget.subItem.isExtracting = false;
               _themeColor = Colors.greenAccent;
-              newLog = "✅ 제조가 완료되었습니다.";
+              newLog = "✅ The beverage has been successfully brewed.";
               if (widget.onComplete != null) {
                 WidgetsBinding.instance.addPostFrameCallback((_) => widget.onComplete!());
               }
@@ -261,10 +285,10 @@ class _ExtractionMonitorContentState extends State<_ExtractionMonitorContent> {
           case 6:
             _isError = true;
             _themeColor = Colors.redAccent;
-            _currentStage = "❌ 제조 실패";
+            _currentStage = "❌ Brewing Failed";
             final dynamic errorData = data['errorCode'];
             _errorCode = (errorData is List && errorData.isNotEmpty) ? errorData.join(", ") : errorData?.toString() ?? "Error";
-            newLog = "❌ 오류 발생: $_errorCode";
+            newLog = "❌ Error: $_errorCode";
             break;
         }
       }
