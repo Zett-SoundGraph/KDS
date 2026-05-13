@@ -238,21 +238,28 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
       String dataToProcess = rawData.trim();
       String orderNo = "";
       String pKey = "";
+      int? targetIndex;
 
       // 🚀 1. 구분자 우측 파싱 방식 (예: Water:20|1001,pkey:1)
       if (dataToProcess.contains("|")) {
         List<String> parts = dataToProcess.split("|");
-        String rightPart = parts.length > 1 ? parts[1] : ""; // "1001,pkey:1"
+        String rightPart = parts.length > 1 ? parts[1] : "";
 
         if (rightPart.isNotEmpty) {
-          // 오른쪽 부분을 콤마(,)로 다시 분리
           List<String> rightElements = rightPart.split(",");
-          orderNo = rightElements[0]; // 첫 번째는 무조건 주문번호
+          String fullOrderId = rightElements[0]; // "1002.01.02" 형태 수신
 
-          // 나머지 요소들 중에서 pkey 값을 찾음
+          // 🚀 [수정 핵심 3] 주문번호와 인덱스 분리 파싱
+          List<String> idParts = fullOrderId.split(".");
+          orderNo = idParts[0]; // "1002"
+          if (idParts.length >= 2) {
+            // "01" -> int 1 -> index 0 (리스트는 0부터 시작하므로)
+            targetIndex = (int.tryParse(idParts[1]) ?? 1) - 1;
+          }
+
           for (String el in rightElements) {
             if (el.trim().toLowerCase().startsWith("pkey:")) {
-              pKey = el.split(":")[1]; // "1"
+              pKey = el.split(":")[1];
               break;
             }
           }
@@ -278,16 +285,30 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
         debugPrint("☕ $orderNo번 주문의 pKey($pKey) 제조 준비 중...");
 
         // 🚀 [수정] 중첩되어 있던 이중 for문을 하나로 합침
-        for (int i = 0; i < order.items.length; i++) {
-          final subItem = order.items[i];
+        if (targetIndex != null && targetIndex >= 0 && targetIndex < order.items.length) {
+          final subItem = order.items[targetIndex];
 
-          // 이미 제조 중이거나 완료된 것은 건너뜀
-          if (subItem.status == OrderStatus.ready || subItem.isExtracting) continue;
+          // 🛡️ [방어막 작동] 이 바코드가 담당하는 칸이 이미 제조 중이거나 완료되었다면 "무시"
+          if (subItem.status == OrderStatus.ready || subItem.isExtracting) {
+            debugPrint("🛡️ [중복 방어 작동] 이미 처리 중인 잔입니다. (Order: $orderNo, Seq: ${targetIndex + 1})");
+            return;
+          }
 
-          // 스캔된 pKey가 존재하면 해당 pKey로 제조 시작!
+          // 해당 칸에 대해서만 제조 시작!
           if (pKey.isNotEmpty) {
-            _startManufacturing(order, subItem, i, scannedPKey: pKey);
-            break; // 👈 하나의 메뉴만 큐에 넣고 깔끔하게 루프 탈출
+            _startManufacturing(order, subItem, targetIndex, scannedPKey: pKey);
+          }
+        } else {
+          // (하위 호환성) 만약 테스트용 구형 바코드(순번 없음)를 찍었을 경우 예전처럼 빈 곳을 찾아서 넣음
+          for (int i = 0; i < order.items.length; i++) {
+            final subItem = order.items[i];
+
+            if (subItem.status == OrderStatus.ready || subItem.isExtracting) continue;
+
+            if (pKey.isNotEmpty) {
+              _startManufacturing(order, subItem, i, scannedPKey: pKey);
+              break;
+            }
           }
         }
       } else {
@@ -1331,12 +1352,16 @@ class _KdsMainScreenState extends State<KdsMainScreen> {
                       pKey = "1";
                     }
 
-                    // 3. 최종 QR 데이터 문자열 (예: N:0|1004,pkey:16)
-                    String qrPayload = "$dispenserData|${order.orderNo},pkey:$pKey";
+                    //// 3. 최종 QR 데이터 문자열 (예: N:0|1004,pkey:16)
+                    //String qrPayload = "$dispenserData|${order.orderNo},pkey:$pKey";
 
                     // 서브 시퀀스 생성 (예: 1/2, 2/2)
                     String seq = (i + 1).toString().padLeft(2, '0');
                     String totSeq = totalItems.toString().padLeft(2, '0');
+
+                    String uniqueOrderId = "${order.orderNo}.$seq.$totSeq";
+
+                    String qrPayload = "$dispenserData|$uniqueOrderId,pkey:$pKey";
 
                     // 4. 대기열에 추가
                     _printQueue.add(
